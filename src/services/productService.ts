@@ -15,17 +15,30 @@ import {
   ShippingMethod,
   WishlistItem,
 } from '../types/models';
+import { getProductBasePrice } from '../utils/pricing';
 
 interface ProductQuery {
   search?: string;
   categoryId?: string;
   sort?: ProductSortOption;
+  page?: number;
+  pageSize?: number;
 }
 
 let categoryIconColumnSupported: boolean | null = null;
+let addressCoordinatesSupported: boolean | null = null;
+const ADDRESS_SELECT_COLUMNS =
+  'id, customer_id, country_region, first_name, last_name, phone, province, city, barangay, postal_code, line1, line2, latitude, longitude, is_default';
+const ADDRESS_SELECT_COLUMNS_LEGACY =
+  'id, customer_id, country_region, first_name, last_name, phone, province, city, barangay, postal_code, line1, line2, is_default';
 
 function isMissingCategoryIconColumn(message?: string) {
   return (message ?? '').toLowerCase().includes('column') && (message ?? '').toLowerCase().includes('icon');
+}
+
+function isMissingAddressCoordinateColumn(message?: string) {
+  const text = (message ?? '').toLowerCase();
+  return text.includes('column') && (text.includes('latitude') || text.includes('longitude'));
 }
 
 function mapRowToProduct(row: any): Product {
@@ -72,18 +85,30 @@ function mapRowToProduct(row: any): Product {
 }
 
 function mapRowToOrder(row: any): Order {
-  const items = (row.order_items ?? []).map((item: any) => ({
-    id: item.id,
-    productId: item.product_id,
-    variantId: item.variant_id ?? undefined,
-    variantName: item.variant_name ?? undefined,
-    variantValue: item.variant_value ?? undefined,
-    productName: item.product_name,
-    sku: item.sku ?? '',
-    unitPrice: Number(item.unit_price ?? 0),
-    quantity: Number(item.quantity ?? 0),
-    lineTotal: Number(item.line_total ?? 0),
-  }));
+  const items = (row.order_items ?? []).map((item: any) => {
+    const itemProduct = Array.isArray(item.products) ? item.products[0] : item.products;
+    const itemImages = Array.isArray(itemProduct?.product_images) ? itemProduct.product_images : [];
+    const fallbackImage = itemImages
+      .map((image: any) => image?.image_url)
+      .find((url: unknown) => typeof url === 'string' && url.trim().length > 0);
+
+    return {
+      id: item.id,
+      productId: item.product_id,
+      variantId: item.variant_id ?? undefined,
+      variantName: item.variant_name ?? undefined,
+      variantValue: item.variant_value ?? undefined,
+      productName: item.product_name,
+      productImageUrl:
+        (typeof item.product_image_url === 'string' && item.product_image_url) ||
+        (typeof itemProduct?.image_url === 'string' ? itemProduct.image_url : undefined) ||
+        (typeof fallbackImage === 'string' ? fallbackImage : undefined),
+      sku: item.sku ?? '',
+      unitPrice: Number(item.unit_price ?? 0),
+      quantity: Number(item.quantity ?? 0),
+      lineTotal: Number(item.line_total ?? 0),
+    };
+  });
 
   return {
     id: row.id,
@@ -132,6 +157,8 @@ function mapRowToAddress(row: any): CustomerAddress {
     postalCode: row.postal_code,
     line1: row.line1,
     line2: row.line2 ?? undefined,
+    latitude: row.latitude === null ? undefined : Number(row.latitude),
+    longitude: row.longitude === null ? undefined : Number(row.longitude),
     isDefault: Boolean(row.is_default),
   };
 }
@@ -152,21 +179,53 @@ function applySort(products: Product[], sort: ProductSortOption = 'best_selling'
   const copy = [...products];
 
   switch (sort) {
+    case 'all':
+      return copy;
     case 'name_asc':
       return copy.sort((a, b) => a.name.localeCompare(b.name));
     case 'on_sale':
-      return copy.sort((a, b) => Number(Boolean(b.onSale)) - Number(Boolean(a.onSale)));
+      return copy.sort((a, b) => {
+        const aOnSale = Number(Boolean(a.onSale));
+        const bOnSale = Number(Boolean(b.onSale));
+        if (aOnSale !== bOnSale) {
+          return bOnSale - aOnSale;
+        }
+        return getProductBasePrice(a) - getProductBasePrice(b);
+      });
     case 'newest':
       return copy;
     case 'oldest':
       return copy.reverse();
     case 'price_asc':
-      return copy.sort((a, b) => a.price - b.price);
+      return copy.sort((a, b) => getProductBasePrice(a) - getProductBasePrice(b));
     case 'price_desc':
-      return copy.sort((a, b) => b.price - a.price);
+      return copy.sort((a, b) => getProductBasePrice(b) - getProductBasePrice(a));
     case 'best_selling':
     default:
       return copy.sort((a, b) => (b.sortPriority ?? 0) - (a.sortPriority ?? 0));
+  }
+}
+
+function applyDbSort<T>(query: T, sort: ProductSortOption | undefined) {
+  const target = query as any;
+  switch (sort) {
+    case 'all':
+      return target.order('created_at', { ascending: false });
+    case 'name_asc':
+      return target.order('name', { ascending: true });
+    case 'on_sale':
+      return target.order('on_sale', { ascending: false }).order('sort_priority', { ascending: false }).order('created_at', { ascending: false });
+    case 'newest':
+      return target.order('created_at', { ascending: false });
+    case 'oldest':
+      return target.order('created_at', { ascending: true });
+    case 'price_asc':
+      return target.order('price', { ascending: true });
+    case 'price_desc':
+      return target.order('price', { ascending: false });
+    case 'best_selling':
+    default:
+      return target.order('sort_priority', { ascending: false }).order('created_at', { ascending: false });
   }
 }
 
@@ -179,7 +238,7 @@ export async function fetchPublicCategories(): Promise<Category[]> {
     const { data, error } = await supabase.from('categories').select('id, name, icon').order('name', { ascending: true });
     if (!error) {
       categoryIconColumnSupported = true;
-      return [{ id: 'all', name: 'All', icon: '🧭' }, ...(data ?? [])];
+      return [{ id: 'all', name: 'All' }, ...(data ?? [])];
     }
 
     if (!isMissingCategoryIconColumn(error.message)) {
@@ -194,10 +253,14 @@ export async function fetchPublicCategories(): Promise<Category[]> {
     throw new Error(error.message);
   }
 
-  return [{ id: 'all', name: 'All', icon: '🧭' }, ...(data ?? [])];
+  return [{ id: 'all', name: 'All' }, ...(data ?? [])];
 }
 
 export async function fetchPublicProducts(query?: ProductQuery): Promise<Product[]> {
+  const page = Math.max(1, Number(query?.page ?? 1));
+  const rawPageSize = Number(query?.pageSize ?? 0);
+  const pageSize = Number.isFinite(rawPageSize) && rawPageSize > 0 ? Math.floor(rawPageSize) : 0;
+
   if (!supabase) {
     const filtered = mockProducts.filter((product) => {
       const bySearch = query?.search
@@ -207,7 +270,14 @@ export async function fetchPublicProducts(query?: ProductQuery): Promise<Product
       const byCategory = query?.categoryId && query.categoryId !== 'all' ? product.categoryId === query.categoryId : true;
       return bySearch && byCategory && product.isActive;
     });
-    return applySort(filtered, query?.sort);
+
+    const sorted = applySort(filtered, query?.sort);
+    if (!pageSize) {
+      return sorted;
+    }
+
+    const start = (page - 1) * pageSize;
+    return sorted.slice(start, start + pageSize);
   }
 
   let dbQuery = supabase
@@ -234,9 +304,7 @@ export async function fetchPublicProducts(query?: ProductQuery): Promise<Product
       product_variants ( id, product_id, name, value, price_delta, stock_override, is_active )
     `,
     )
-    .eq('is_active', true)
-    .order('sort_priority', { ascending: false })
-    .order('created_at', { ascending: false });
+    .eq('is_active', true);
 
   if (query?.categoryId && query.categoryId !== 'all') {
     dbQuery = dbQuery.eq('category_id', query.categoryId);
@@ -246,12 +314,20 @@ export async function fetchPublicProducts(query?: ProductQuery): Promise<Product
     dbQuery = dbQuery.or(`name.ilike.%${query.search}%,description.ilike.%${query.search}%`);
   }
 
+  dbQuery = applyDbSort(dbQuery, query?.sort);
+
+  if (pageSize > 0) {
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize - 1;
+    dbQuery = dbQuery.range(start, end);
+  }
+
   const { data, error } = await dbQuery;
   if (error) {
     throw new Error(error.message);
   }
 
-  return applySort((data ?? []).map(mapRowToProduct), query?.sort);
+  return (data ?? []).map(mapRowToProduct);
 }
 
 export async function fetchProductById(productId: string): Promise<Product | null> {
@@ -315,16 +391,35 @@ export async function fetchCustomerAddresses(customerId: string): Promise<Custom
     return [];
   }
 
+  if (addressCoordinatesSupported !== false) {
+    const { data, error } = await supabase
+      .from('customer_addresses')
+      .select(ADDRESS_SELECT_COLUMNS)
+      .eq('customer_id', customerId)
+      .order('is_default', { ascending: false })
+      .order('created_at', { ascending: true });
+
+    if (!error) {
+      addressCoordinatesSupported = true;
+      return (data ?? []).map(mapRowToAddress);
+    }
+
+    if (!isMissingAddressCoordinateColumn(error.message)) {
+      throw new Error(error.message);
+    }
+
+    addressCoordinatesSupported = false;
+  }
+
   const { data, error } = await supabase
     .from('customer_addresses')
-    .select('id, customer_id, country_region, first_name, last_name, phone, province, city, barangay, postal_code, line1, line2, is_default')
+    .select(ADDRESS_SELECT_COLUMNS_LEGACY)
     .eq('customer_id', customerId)
     .order('is_default', { ascending: false })
     .order('created_at', { ascending: true });
   if (error) {
     throw new Error(error.message);
   }
-
   return (data ?? []).map(mapRowToAddress);
 }
 
@@ -345,15 +440,52 @@ export async function saveCustomerAddress(input: Omit<CustomerAddress, 'id'> & {
     postal_code: input.postalCode,
     line1: input.line1,
     line2: input.line2 ?? null,
+    latitude: Number.isFinite(input.latitude) ? Number(input.latitude) : null,
+    longitude: Number.isFinite(input.longitude) ? Number(input.longitude) : null,
     is_default: input.isDefault,
   };
 
   if (input.id) {
+    if (addressCoordinatesSupported !== false) {
+      const { data, error } = await supabase
+        .from('customer_addresses')
+        .update(payload)
+        .eq('id', input.id)
+        .select(ADDRESS_SELECT_COLUMNS)
+        .single();
+
+      if (!error) {
+        addressCoordinatesSupported = true;
+        return mapRowToAddress(data);
+      }
+
+      if (!isMissingAddressCoordinateColumn(error.message)) {
+        throw new Error(error.message);
+      }
+
+      addressCoordinatesSupported = false;
+    }
+
+    const legacyPayload = {
+      customer_id: input.customerId,
+      country_region: input.countryRegion,
+      first_name: input.firstName,
+      last_name: input.lastName,
+      phone: input.phone,
+      province: input.province,
+      city: input.city,
+      barangay: input.barangay,
+      postal_code: input.postalCode,
+      line1: input.line1,
+      line2: input.line2 ?? null,
+      is_default: input.isDefault,
+    };
+
     const { data, error } = await supabase
       .from('customer_addresses')
-      .update(payload)
+      .update(legacyPayload)
       .eq('id', input.id)
-      .select('id, customer_id, country_region, first_name, last_name, phone, province, city, barangay, postal_code, line1, line2, is_default')
+      .select(ADDRESS_SELECT_COLUMNS_LEGACY)
       .single();
     if (error) {
       throw new Error(error.message);
@@ -361,10 +493,43 @@ export async function saveCustomerAddress(input: Omit<CustomerAddress, 'id'> & {
     return mapRowToAddress(data);
   }
 
+  if (addressCoordinatesSupported !== false) {
+    const { data, error } = await supabase
+      .from('customer_addresses')
+      .insert(payload)
+      .select(ADDRESS_SELECT_COLUMNS)
+      .single();
+    if (!error) {
+      addressCoordinatesSupported = true;
+      return mapRowToAddress(data);
+    }
+
+    if (!isMissingAddressCoordinateColumn(error.message)) {
+      throw new Error(error.message);
+    }
+
+    addressCoordinatesSupported = false;
+  }
+
+  const legacyPayload = {
+    customer_id: input.customerId,
+    country_region: input.countryRegion,
+    first_name: input.firstName,
+    last_name: input.lastName,
+    phone: input.phone,
+    province: input.province,
+    city: input.city,
+    barangay: input.barangay,
+    postal_code: input.postalCode,
+    line1: input.line1,
+    line2: input.line2 ?? null,
+    is_default: input.isDefault,
+  };
+
   const { data, error } = await supabase
     .from('customer_addresses')
-    .insert(payload)
-    .select('id, customer_id, country_region, first_name, last_name, phone, province, city, barangay, postal_code, line1, line2, is_default')
+    .insert(legacyPayload)
+    .select(ADDRESS_SELECT_COLUMNS_LEGACY)
     .single();
   if (error) {
     throw new Error(error.message);
@@ -486,7 +651,11 @@ export async function fetchCustomerOrders(customerId: string): Promise<Order[]> 
         sku,
         unit_price,
         quantity,
-        line_total
+        line_total,
+        products (
+          image_url,
+          product_images ( image_url, sort_order )
+        )
       )
     `,
     )
@@ -498,6 +667,23 @@ export async function fetchCustomerOrders(customerId: string): Promise<Order[]> 
   }
 
   return (data ?? []).map(mapRowToOrder);
+}
+
+export async function fetchReviewedOrderItemIds(customerId: string): Promise<string[]> {
+  if (!supabase) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('product_reviews')
+    .select('order_item_id')
+    .eq('customer_id', customerId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data ?? []).map((row: any) => String(row.order_item_id));
 }
 
 export async function fetchOrderTrackingEvents(orderId: string): Promise<OrderTrackingEvent[]> {

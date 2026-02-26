@@ -6,6 +6,8 @@ interface PickAndUploadImagesOptions {
   maxImages?: number;
   resizeWidth?: number;
   compress?: number;
+  targetBytes?: number;
+  onProgress?: (progress: { completed: number; total: number }) => void;
 }
 
 type PickAndUploadImages = (options: PickAndUploadImagesOptions) => Promise<string[]>;

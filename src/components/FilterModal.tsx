@@ -6,13 +6,14 @@ import { Category, ProductSortOption } from '../types/models';
 import { getCategoryIcon } from '../utils/categoryIcons';
 
 const SORT_OPTIONS: Array<{ id: ProductSortOption; label: string }> = [
+    { id: 'all', label: 'All' },
     { id: 'best_selling', label: 'Best Selling' },
     { id: 'name_asc', label: 'A-Z' },
     { id: 'on_sale', label: 'On Sale' },
     { id: 'newest', label: 'Newest First' },
     { id: 'oldest', label: 'Oldest First' },
-    { id: 'price_asc', label: 'Price Low → High' },
-    { id: 'price_desc', label: 'Price High → Low' },
+    { id: 'price_asc', label: 'Price Low to High' },
+    { id: 'price_desc', label: 'Price High to Low' },
 ];
 
 interface FilterModalProps {

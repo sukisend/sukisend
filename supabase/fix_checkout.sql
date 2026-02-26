@@ -50,6 +50,8 @@ declare
   v_delivery_area text;
   v_delivery_address text;
   v_item_variant_id uuid;
+  v_restriction_reason text;
+  v_restriction_ends_at timestamptz;
 begin
   if auth.uid() is null then
     raise exception 'Authentication required.';
@@ -57,6 +59,32 @@ begin
 
   if auth.uid() <> p_customer_id and not public.is_admin(auth.uid()) then
     raise exception 'You can only create your own order.';
+  end if;
+
+  select reason, ends_at
+  into v_restriction_reason, v_restriction_ends_at
+  from public.customer_restrictions
+  where customer_id = p_customer_id
+    and is_active = true
+    and starts_at <= now()
+    and (ends_at is null or ends_at > now())
+    and severity in ('restricted', 'banned')
+  order by
+    case severity
+      when 'banned' then 3
+      when 'restricted' then 2
+      else 1
+    end desc,
+    created_at desc
+  limit 1;
+
+  if found then
+    raise exception 'Ordering is currently restricted (%). %',
+      case
+        when v_restriction_ends_at is null then 'permanently'
+        else 'until ' || to_char(v_restriction_ends_at, 'Mon DD, YYYY HH24:MI')
+      end,
+      v_restriction_reason;
   end if;
 
   select *
@@ -117,7 +145,11 @@ begin
     end if;
 
     v_item_variant_id := nullif(v_item ->> 'variant_id', '')::uuid;
-    v_unit_price := v_product.price;
+    v_unit_price := case
+      when v_product.on_sale = true and v_product.sale_price is not null and v_product.sale_price >= 0
+        then v_product.sale_price
+      else v_product.price
+    end;
 
     if v_item_variant_id is not null then
       select id, name, value, price_delta, stock_override
@@ -136,7 +168,7 @@ begin
         raise exception 'Not enough stock for variant % (%).', v_variant_name, v_variant_value;
       end if;
 
-      v_unit_price := v_product.price + coalesce(v_variant_price_delta, 0);
+      v_unit_price := v_unit_price + coalesce(v_variant_price_delta, 0);
     end if;
 
     v_subtotal := v_subtotal + (v_unit_price * v_qty);
@@ -177,7 +209,11 @@ begin
     v_variant_value := null;
     v_variant_price_delta := null;
     v_variant_stock_override := null;
-    v_unit_price := v_product.price;
+    v_unit_price := case
+      when v_product.on_sale = true and v_product.sale_price is not null and v_product.sale_price >= 0
+        then v_product.sale_price
+      else v_product.price
+    end;
 
     if v_item_variant_id is not null then
       select id, name, value, price_delta, stock_override
@@ -192,7 +228,7 @@ begin
         raise exception 'Invalid product variant selected for %.', v_product.name;
       end if;
 
-      v_unit_price := v_product.price + coalesce(v_variant_price_delta, 0);
+      v_unit_price := v_unit_price + coalesce(v_variant_price_delta, 0);
 
       update public.product_variants
       set stock_override = stock_override - v_qty

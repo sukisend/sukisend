@@ -1,4 +1,4 @@
-export type UserRole = 'guest' | 'customer' | 'admin';
+export type UserRole = 'guest' | 'customer' | 'admin' | 'rider';
 
 export type SalesRangePreset =
   | 'today'
@@ -27,6 +27,7 @@ export type OrderStatus =
 export type PaymentStatus = 'unpaid' | 'paid' | 'refunded';
 
 export type ProductSortOption =
+  | 'all'
   | 'best_selling'
   | 'name_asc'
   | 'on_sale'
@@ -94,6 +95,7 @@ export interface OrderItem {
   variantName?: string;
   variantValue?: string;
   productName: string;
+  productImageUrl?: string;
   sku?: string;
   unitPrice: number;
   quantity: number;
@@ -152,6 +154,8 @@ export interface CustomerAddress {
   postalCode: string;
   line1: string;
   line2?: string;
+  latitude?: number;
+  longitude?: number;
   isDefault: boolean;
 }
 
@@ -205,6 +209,49 @@ export interface RiderReview {
   createdAt: string;
 }
 
+export type RestrictionSeverity = 'warning' | 'restricted' | 'banned';
+
+export interface CustomerRestriction {
+  id: string;
+  customerId: string;
+  reason: string;
+  severity: RestrictionSeverity;
+  startsAt: string;
+  endsAt?: string;
+}
+
+export interface CustomerModerationUser {
+  id: string;
+  fullName: string;
+  email: string;
+  createdAt: string;
+  totalOrders: number;
+  pendingOrders: number;
+  activeRestriction?: CustomerRestriction;
+}
+
+export interface SellerChatThread {
+  id: string;
+  customerId: string;
+  customerName: string;
+  customerEmail?: string;
+  lastMessageAt: string;
+  lastMessage?: string;
+  unreadCount: number;
+  isClosed: boolean;
+}
+
+export interface SellerChatMessage {
+  id: string;
+  threadId: string;
+  senderId: string;
+  senderRole: 'customer' | 'admin';
+  senderName?: string;
+  message: string;
+  isRead: boolean;
+  createdAt: string;
+}
+
 export interface RefundRequest {
   id: string;
   orderId: string;
@@ -232,6 +279,7 @@ export interface SalesMetrics {
 export interface ProductSalesRank {
   productId: string;
   name: string;
+  imageUrl?: string;
   qty: number;
   sales: number;
 }

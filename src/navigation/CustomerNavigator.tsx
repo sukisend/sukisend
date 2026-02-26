@@ -9,7 +9,9 @@ import { AccountScreen } from '../screens/customer/AccountScreen';
 import { AuthScreen } from '../screens/customer/AuthScreen';
 import { CartScreen } from '../screens/customer/CartScreen';
 import { CheckoutScreen } from '../screens/customer/CheckoutScreen';
+import { ChatSellerScreen } from '../screens/customer/ChatSellerScreen';
 import { HomeScreen } from '../screens/customer/HomeScreen';
+import { LegalScreen } from '../screens/customer/LegalScreen';
 import { OrdersScreen } from '../screens/customer/OrdersScreen';
 import { ProductDetailScreen } from '../screens/customer/ProductDetailScreen';
 import { CustomerStackParamList, CustomerTabsParamList } from './types';
@@ -76,12 +78,19 @@ export function CustomerNavigator() {
         headerStyle: { backgroundColor: theme.colors.surface },
         headerTintColor: theme.colors.text,
         headerTitleStyle: { fontWeight: '800' },
+        animation: 'fade',
       }}
     >
       <Stack.Screen name="CustomerTabs" component={CustomerTabs} options={{ headerShown: false }} />
       <Stack.Screen name="ProductDetail" component={ProductDetailScreen} options={{ title: 'Product Details' }} />
       <Stack.Screen name="Checkout" component={CheckoutScreen} options={{ title: 'Checkout' }} />
-      <Stack.Screen name="Auth" component={AuthScreen} options={{ title: 'Sign In / Sign Up', presentation: 'modal' }} />
+      <Stack.Screen name="ChatSeller" component={ChatSellerScreen} options={{ title: 'Chat Seller', animation: 'fade' }} />
+      <Stack.Screen name="Legal" component={LegalScreen} options={{ title: 'Policies', animation: 'fade' }} />
+      <Stack.Screen
+        name="Auth"
+        component={AuthScreen}
+        options={{ title: 'Sign In / Sign Up', presentation: 'modal', animation: 'fade' }}
+      />
     </Stack.Navigator>
   );
 }

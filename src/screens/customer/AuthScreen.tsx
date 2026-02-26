@@ -5,10 +5,13 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { FullScreenVideoLoader } from '../../components/FullScreenVideoLoader';
+import { LogoHeader } from '../../components/LogoHeader';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { CustomerStackParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
+import { wait } from '../../utils/async';
 
 type AuthRoute = RouteProp<CustomerStackParamList, 'Auth'>;
 
@@ -32,7 +35,7 @@ export function AuthScreen() {
   const isSignup = mode === 'signup';
   const isAdminMode = mode === 'admin';
 
-  const title = isSignup ? 'Create Customer Account' : isAdminMode ? 'Admin Sign In' : 'Customer Sign In';
+  const title = isSignup ? 'Create Customer Account' : isAdminMode ? 'Staff Sign In' : 'Customer Sign In';
 
   const submit = async () => {
     if (!email.trim() || !password.trim()) {
@@ -57,7 +60,10 @@ export function AuthScreen() {
 
     try {
       if (isSignup) {
-        const message = await signUp(name.trim(), email.trim(), password.trim());
+        const [message] = await Promise.all([
+          signUp(name.trim(), email.trim(), password.trim()),
+          wait(6000),
+        ]);
         if (message) {
           showAlert({
             title: 'Sign up failed',
@@ -76,7 +82,10 @@ export function AuthScreen() {
         return;
       }
 
-      const message = await signIn(email.trim(), password.trim(), isAdminMode);
+      const [message] = await Promise.all([
+        signIn(email.trim(), password.trim(), isAdminMode),
+        wait(6000),
+      ]);
       if (message) {
         showAlert({
           title: 'Sign in failed',
@@ -86,7 +95,15 @@ export function AuthScreen() {
         return;
       }
 
-      navigation.goBack();
+      showAlert({
+        title: isAdminMode ? 'Welcome back, Admin' : 'Welcome to SUKI SEND',
+        message: isAdminMode
+          ? 'Staff access is ready. You can now open your assigned dashboard.'
+          : 'Login successful. Enjoy safer and easier shopping with SUKI SEND.',
+        tone: 'success',
+        actionLabel: 'Continue',
+        onAction: () => navigation.goBack(),
+      });
     } finally {
       setSubmitting(false);
     }
@@ -98,10 +115,18 @@ export function AuthScreen() {
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
       showsVerticalScrollIndicator={false}
     >
+      <View style={[styles.heroCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+        <LogoHeader />
+        <Text style={[styles.heroTitle, { color: theme.colors.text }]}>Your trusted neighborhood delivery partner</Text>
+        <Text style={[styles.heroSubtitle, { color: theme.colors.textMuted }]}>
+          Shop essentials with secure checkout, reliable updates, and doorstep convenience.
+        </Text>
+      </View>
+
       <Text style={[styles.title, { color: theme.colors.text }]}>{title}</Text>
       <Text style={[styles.subtitle, { color: theme.colors.textMuted }]}>
         {isAdminMode
-          ? 'Store manager access'
+          ? 'Store staff access'
           : 'Sign in to place orders, track deliveries, and save your shopping history.'}
       </Text>
 
@@ -172,6 +197,11 @@ export function AuthScreen() {
       )}
 
       <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
+      <FullScreenVideoLoader
+        visible={submitting}
+        label={isSignup ? 'Creating your account' : 'Signing you in'}
+        message="Please wait while we secure your session."
+      />
     </ScrollView>
   );
 }
@@ -187,6 +217,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 24,
     fontWeight: '900',
+    marginTop: 10,
   },
   subtitle: {
     fontSize: 13,
@@ -199,6 +230,23 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 14,
     padding: 14,
+  },
+  heroCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  heroTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: 10,
+  },
+  heroSubtitle: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
   },
   label: {
     fontSize: 12,

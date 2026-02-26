@@ -2,15 +2,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useEffect, useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { ImagePreviewModal } from '../../components/ImagePreviewModal';
+import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { CustomerStackParamList } from '../../navigation/types';
 import { useTheme } from '../../providers/ThemeProvider';
 import { fetchProductById, fetchProductReviews } from '../../services/productService';
 import { useCartStore } from '../../store/cartStore';
 import { Product, ProductReview, ProductVariant } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
+import { getVariantUnitPrice } from '../../utils/pricing';
 
 type ProductDetailRoute = RouteProp<CustomerStackParamList, 'ProductDetail'>;
 
@@ -20,11 +24,16 @@ export function ProductDetailScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<CustomerStackParamList>>();
   const { theme } = useTheme();
   const addItem = useCartStore((state) => state.addItem);
+  const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
+  const screenWidth = Dimensions.get('window').width;
 
   const [product, setProduct] = useState<Product>(route.params.product);
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [reviews, setReviews] = useState<ProductReview[]>([]);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [previewImages, setPreviewImages] = useState<string[]>([]);
+  const [previewIndex, setPreviewIndex] = useState(0);
 
   useEffect(() => {
     fetchProductById(route.params.product.id)
@@ -53,8 +62,8 @@ export function ProductDetailScreen() {
     [activeVariants, selectedVariantId],
   );
   const effectivePrice = useMemo(
-    () => product.price + (selectedVariant?.priceDelta ?? 0),
-    [product.price, selectedVariant?.priceDelta],
+    () => getVariantUnitPrice(product, selectedVariant),
+    [product, selectedVariant],
   );
 
   const outOfStock = (selectedVariant?.stockOverride ?? product.stock) <= 0;
@@ -66,29 +75,56 @@ export function ProductDetailScreen() {
       : [];
   const averageRating = reviews.length ? reviews.reduce((sum, item) => sum + item.rating, 0) / reviews.length : 0;
 
+  const openImagePreview = (imagesToPreview: string[], index = 0) => {
+    if (!imagesToPreview.length) {
+      return;
+    }
+    setPreviewImages(imagesToPreview);
+    setPreviewIndex(index);
+    setPreviewVisible(true);
+  };
+
   const addToCart = () => {
     addItem(product, quantity, {
       variantId: selectedVariant?.id,
       variantLabel: selectedVariant ? `${selectedVariant.name}: ${selectedVariant.value}` : undefined,
       unitPrice: effectivePrice,
     });
-    navigation.navigate('Checkout');
+    showAlert({
+      title: 'Added to cart',
+      message: `${product.name} was added to your cart.`,
+      tone: 'success',
+      actionLabel: 'Go to Checkout',
+      onAction: () => navigation.navigate('Checkout'),
+    });
   };
+
+  const galleryImages = images.map((image) => image.imageUrl);
 
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
     >
-      <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} style={styles.gallery}>
+      <ScrollView
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        style={styles.gallery}
+        contentContainerStyle={styles.galleryContent}
+      >
         {images.length ? (
-          images.map((image) => (
-            <View key={image.id} style={[styles.imageWrap, { backgroundColor: theme.colors.surfaceAlt }]}>
-              <Image source={{ uri: image.imageUrl }} style={styles.image} />
-            </View>
+          images.map((image, index) => (
+            <Pressable
+              key={image.id}
+              style={[styles.imageWrap, { backgroundColor: theme.colors.surfaceAlt, width: screenWidth - 28 }]}
+              onPress={() => openImagePreview(galleryImages, index)}
+            >
+              <Image source={{ uri: image.imageUrl }} style={styles.image} resizeMode="cover" />
+            </Pressable>
           ))
         ) : (
-          <View style={[styles.imageWrap, { backgroundColor: theme.colors.surfaceAlt }]}>
+          <View style={[styles.imageWrap, { backgroundColor: theme.colors.surfaceAlt, width: screenWidth - 28 }]}>
             <Ionicons name="cube-outline" size={28} color={theme.colors.textMuted} />
           </View>
         )}
@@ -96,6 +132,9 @@ export function ProductDetailScreen() {
 
       <Text style={[styles.title, { color: theme.colors.text }]}>{product.name}</Text>
       <Text style={[styles.price, { color: theme.colors.primary }]}>{formatPHP(effectivePrice)}</Text>
+      {selectedVariantId === null && product.onSale && product.salePrice !== undefined && product.salePrice < product.price ? (
+        <Text style={[styles.oldPrice, { color: theme.colors.textMuted }]}>{formatPHP(product.price)}</Text>
+      ) : null}
       <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
         Category: {product.categoryName} | Unit: {product.unit}
       </Text>
@@ -125,7 +164,8 @@ export function ProductDetailScreen() {
                 >
                   <Text style={[styles.variantText, { color: active ? theme.colors.primaryContrast : theme.colors.text }]}>
                     {variant.value}
-                    {variant.priceDelta ? ` (${variant.priceDelta > 0 ? '+' : ''}${formatPHP(variant.priceDelta)})` : ''}
+                    {' '}
+                    ({formatPHP(getVariantUnitPrice(product, variant))})
                   </Text>
                 </Pressable>
               );
@@ -158,12 +198,21 @@ export function ProductDetailScreen() {
         <Text style={[styles.reviewScore, { color: theme.colors.text }]}>
           {reviews.length ? `${averageRating.toFixed(1)} / 5 (${reviews.length} reviews)` : 'No reviews yet'}
         </Text>
-        {reviews.slice(0, 3).map((review) => (
+        {reviews.slice(0, 4).map((review) => (
           <View key={review.id} style={styles.reviewItem}>
             <Text style={[styles.reviewAuthor, { color: theme.colors.text }]}>{review.authorName || 'Customer'}</Text>
             <Text style={[styles.reviewMeta, { color: theme.colors.textMuted }]}>
               {'★'.repeat(Math.max(1, Math.min(5, review.rating)))} {review.comment || 'No comment'}
             </Text>
+            {review.images.length ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reviewImageRow}>
+                {review.images.map((uri, index) => (
+                  <Pressable key={`${review.id}-${index}`} onPress={() => openImagePreview(review.images, index)}>
+                    <Image source={{ uri }} style={styles.reviewImageThumb} />
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
           </View>
         ))}
       </View>
@@ -178,10 +227,23 @@ export function ProductDetailScreen() {
         disabled={outOfStock}
         onPress={addToCart}
       >
-        <Text style={[styles.primaryButtonText, { color: outOfStock ? theme.colors.textMuted : theme.colors.primaryContrast }]}>
-          {outOfStock ? 'Stock Unavailable' : 'Add to Cart & Checkout'}
+        <Text
+          style={[
+            styles.primaryButtonText,
+            { color: outOfStock ? theme.colors.textMuted : theme.colors.primaryContrast },
+          ]}
+        >
+          {outOfStock ? 'Stock Unavailable' : 'Add to Cart'}
         </Text>
       </Pressable>
+
+      <ImagePreviewModal
+        visible={previewVisible}
+        images={previewImages}
+        initialIndex={previewIndex}
+        onClose={() => setPreviewVisible(false)}
+      />
+      <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
     </ScrollView>
   );
 }
@@ -196,14 +258,15 @@ const styles = StyleSheet.create({
   gallery: {
     marginBottom: 8,
   },
+  galleryContent: {
+    gap: 10,
+  },
   imageWrap: {
     alignItems: 'center',
     borderRadius: 18,
-    height: 250,
+    height: 286,
     justifyContent: 'center',
-    marginRight: 10,
     overflow: 'hidden',
-    width: 320,
   },
   image: {
     height: '100%',
@@ -218,6 +281,12 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '900',
     marginTop: 4,
+  },
+  oldPrice: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 2,
+    textDecorationLine: 'line-through',
   },
   meta: {
     fontSize: 13,
@@ -299,6 +368,15 @@ const styles = StyleSheet.create({
   reviewMeta: {
     fontSize: 12,
     marginTop: 2,
+  },
+  reviewImageRow: {
+    gap: 8,
+    marginTop: 8,
+  },
+  reviewImageThumb: {
+    borderRadius: 8,
+    height: 68,
+    width: 68,
   },
   primaryButton: {
     borderRadius: 999,

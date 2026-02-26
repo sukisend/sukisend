@@ -15,13 +15,14 @@ type ExportHandler = (payload: ExportPayload) => Promise<void>;
 const reportService =
   Platform.OS === 'web'
     ? (require('./reportService.web') as {
-        exportSalesReportCSV: ExportHandler;
+        exportSalesReportXLSX: ExportHandler;
         exportSalesReportPDF: ExportHandler;
       })
     : (require('./reportService.native') as {
-        exportSalesReportCSV: ExportHandler;
+        exportSalesReportXLSX: ExportHandler;
         exportSalesReportPDF: ExportHandler;
       });
 
-export const exportSalesReportCSV = reportService.exportSalesReportCSV;
+export const exportSalesReportXLSX = reportService.exportSalesReportXLSX;
 export const exportSalesReportPDF = reportService.exportSalesReportPDF;
+export const exportSalesReportCSV = reportService.exportSalesReportXLSX;

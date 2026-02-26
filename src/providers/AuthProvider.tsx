@@ -2,6 +2,7 @@ import { Session } from '@supabase/supabase-js';
 import { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from 'react';
 
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { fetchActiveCustomerRestriction } from '../services/chatModerationService';
 import { AppProfile, UserRole } from '../types/models';
 
 interface AuthContextValue {
@@ -18,7 +19,13 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 function normalizeRole(role?: string): Exclude<UserRole, 'guest'> {
-  return role === 'admin' ? 'admin' : 'customer';
+  if (role === 'admin') {
+    return 'admin';
+  }
+  if (role === 'rider') {
+    return 'rider';
+  }
+  return 'customer';
 }
 
 async function resolveProfile(session: Session): Promise<AppProfile | null> {
@@ -163,11 +170,24 @@ export function AuthProvider({ children }: PropsWithChildren) {
       setProfile(resolved);
       setSession(nextSession);
 
-      if (asAdmin && resolved?.role !== 'admin') {
+      if (asAdmin && !['admin', 'rider'].includes(resolved?.role ?? '')) {
         await supabase.auth.signOut();
         setSession(null);
         setProfile(null);
-        return 'This account is not registered as an admin.';
+        return 'This account is not registered as staff.';
+      }
+
+      if (!asAdmin && resolved?.role === 'customer') {
+        const activeRestriction = await fetchActiveCustomerRestriction(resolved.id);
+        if (activeRestriction && ['restricted', 'banned'].includes(activeRestriction.severity)) {
+          await supabase.auth.signOut();
+          setSession(null);
+          setProfile(null);
+          const untilLabel = activeRestriction.endsAt
+            ? `until ${new Date(activeRestriction.endsAt).toLocaleString()}`
+            : 'permanently';
+          return `Your account is currently restricted ${untilLabel}. Reason: ${activeRestriction.reason}`;
+        }
       }
 
       return null;

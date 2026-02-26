@@ -10,6 +10,7 @@ interface TrackingMapProps {
   coordinates: Coordinate[];
   origin?: Coordinate | null;
   destination?: Coordinate | null;
+  routeCoordinates?: Coordinate[];
 }
 
 const TrackingMapImpl =

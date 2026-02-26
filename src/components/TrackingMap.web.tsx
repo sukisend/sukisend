@@ -12,6 +12,7 @@ interface TrackingMapProps {
   coordinates: Coordinate[];
   origin?: Coordinate | null;
   destination?: Coordinate | null;
+  routeCoordinates?: Coordinate[];
 }
 
 const MAP_STYLE_URL = process.env.EXPO_PUBLIC_MAP_STYLE_URL ?? 'https://demotiles.maplibre.org/style.json';
@@ -47,7 +48,26 @@ function toLineFeature(points: Coordinate[]) {
   };
 }
 
-function createMarkerElement(icon: string, background: string) {
+const BRAND_LOGO = require('../../assets/suki-send-logo.png');
+
+function resolveLogoUri() {
+  const raw = BRAND_LOGO as any;
+  if (typeof raw === 'string') {
+    return raw;
+  }
+  if (raw?.uri && typeof raw.uri === 'string') {
+    return raw.uri;
+  }
+  if (raw?.default && typeof raw.default === 'string') {
+    return raw.default;
+  }
+  if (raw?.default?.uri && typeof raw.default.uri === 'string') {
+    return raw.default.uri;
+  }
+  return '';
+}
+
+function createMarkerElement(kind: 'store' | 'customer' | 'rider') {
   const element = document.createElement('div');
   element.style.width = '28px';
   element.style.height = '28px';
@@ -55,13 +75,29 @@ function createMarkerElement(icon: string, background: string) {
   element.style.display = 'flex';
   element.style.alignItems = 'center';
   element.style.justifyContent = 'center';
-  element.style.background = background;
+  element.style.background = kind === 'store' ? '#FFFFFF' : kind === 'customer' ? '#E11D48' : '#F97316';
   element.style.border = '1px solid #0F172A';
   element.style.boxShadow = '0 2px 6px rgba(15,23,42,0.35)';
   element.style.fontSize = '13px';
-  element.style.color = '#FFFFFF';
+  element.style.color = kind === 'store' ? '#0F172A' : '#FFFFFF';
   element.style.fontWeight = '700';
-  element.textContent = icon;
+
+  if (kind === 'store') {
+    const logo = document.createElement('img');
+    const src = resolveLogoUri();
+    if (src) {
+      logo.src = src;
+      logo.style.width = '20px';
+      logo.style.height = '20px';
+      logo.style.borderRadius = '999px';
+      element.appendChild(logo);
+    } else {
+      element.textContent = '🏬';
+    }
+  } else {
+    element.textContent = kind === 'customer' ? '👤' : '🚚';
+  }
+
   return element;
 }
 
@@ -82,7 +118,7 @@ function buildOsmEmbedUrl(points: Coordinate[]) {
   return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${centerLat},${centerLng}`;
 }
 
-export function TrackingMap({ coordinates, origin, destination }: TrackingMapProps) {
+export function TrackingMap({ coordinates, origin, destination, routeCoordinates = [] }: TrackingMapProps) {
   const { theme } = useTheme();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<any>(null);
@@ -94,9 +130,17 @@ export function TrackingMap({ coordinates, origin, destination }: TrackingMapPro
   const [error, setError] = useState<string | null>(null);
 
   const riderCoordinate = coordinates.length ? coordinates[coordinates.length - 1] : null;
+  const safeRouteCoordinates = routeCoordinates.filter(
+    (point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
+  );
   const route = useMemo(
-    () => dedupe([...(origin ? [origin] : []), ...coordinates, ...(destination ? [destination] : [])]),
-    [coordinates, destination, origin],
+    () =>
+      dedupe(
+        safeRouteCoordinates.length
+          ? safeRouteCoordinates
+          : [...(origin ? [origin] : []), ...coordinates, ...(destination ? [destination] : [])],
+      ),
+    [coordinates, destination, origin, safeRouteCoordinates],
   );
   const embedUrl = useMemo(
     () => buildOsmEmbedUrl(route.length ? route : [origin, riderCoordinate, destination].filter((point): point is Coordinate => Boolean(point))),
@@ -205,19 +249,19 @@ export function TrackingMap({ coordinates, origin, destination }: TrackingMapPro
     destinationMarkerRef.current = null;
 
     if (origin) {
-      originMarkerRef.current = new module.Marker({ element: createMarkerElement('S', '#2563EB') })
+      originMarkerRef.current = new module.Marker({ element: createMarkerElement('store') })
         .setLngLat([origin.longitude, origin.latitude])
         .addTo(map);
     }
 
     if (destination) {
-      destinationMarkerRef.current = new module.Marker({ element: createMarkerElement('R', '#EF4444') })
+      destinationMarkerRef.current = new module.Marker({ element: createMarkerElement('customer') })
         .setLngLat([destination.longitude, destination.latitude])
         .addTo(map);
     }
 
     if (riderCoordinate) {
-      riderMarkerRef.current = new module.Marker({ element: createMarkerElement('M', '#F97316') })
+      riderMarkerRef.current = new module.Marker({ element: createMarkerElement('rider') })
         .setLngLat([riderCoordinate.longitude, riderCoordinate.latitude])
         .addTo(map);
     }

@@ -1,5 +1,4 @@
 import dayjs from 'dayjs';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
@@ -13,7 +12,7 @@ import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 import { fetchDashboardSnapshot } from '../../services/adminService';
-import { exportSalesReportCSV, exportSalesReportPDF } from '../../services/reportService';
+import { exportSalesReportPDF, exportSalesReportXLSX } from '../../services/reportService';
 import { DashboardSnapshot, DateRange, SalesRangePreset } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
 
@@ -29,7 +28,6 @@ const RANGE_LABELS: Record<SalesRangePreset, string> = {
 };
 
 export function AdminReportsScreen() {
-  const tabBarHeight = useBottomTabBarHeight();
   const { theme } = useTheme();
   const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const { profile } = useAuth();
@@ -39,7 +37,7 @@ export function AdminReportsScreen() {
     end: dayjs().format('YYYY-MM-DD'),
   });
   const [loading, setLoading] = useState(false);
-  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null);
+  const [exporting, setExporting] = useState<'xlsx' | 'pdf' | null>(null);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
 
   const rangeIso: DateRange = useMemo(
@@ -69,7 +67,7 @@ export function AdminReportsScreen() {
     loadReport();
   }, [rangePreset, rangeIso.start, rangeIso.end]);
 
-  const runExport = async (type: 'csv' | 'pdf') => {
+  const runExport = async (type: 'xlsx' | 'pdf') => {
     if (!snapshot) {
       showAlert({
         title: 'No data',
@@ -91,8 +89,8 @@ export function AdminReportsScreen() {
         ),
       };
 
-      if (type === 'csv') {
-        await exportSalesReportCSV(payload);
+      if (type === 'xlsx') {
+        await exportSalesReportXLSX(payload);
       } else {
         await exportSalesReportPDF(payload);
       }
@@ -111,7 +109,7 @@ export function AdminReportsScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
-      contentContainerStyle={[styles.content, { paddingBottom: tabBarHeight + 22 }]}
+      contentContainerStyle={[styles.content, { paddingBottom: 8 }]}
     >
       <SectionHeader title="Analytics & Reports" subtitle="Review performance and export professional reports." />
 
@@ -155,15 +153,15 @@ export function AdminReportsScreen() {
 
               <Pressable
                 style={[styles.exportCard, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
-                onPress={() => runExport('csv')}
+                onPress={() => runExport('xlsx')}
                 disabled={Boolean(exporting)}
               >
-                <Text style={[styles.exportTitle, { color: theme.colors.text }]}>Excel / CSV</Text>
+                <Text style={[styles.exportTitle, { color: theme.colors.text }]}>Excel / XLSX</Text>
                 <Text style={[styles.exportSub, { color: theme.colors.textMuted }]}>
                   Spreadsheet-friendly file for deeper review and accounting.
                 </Text>
                 <Text style={[styles.exportAction, { color: theme.colors.primary }]}>
-                  {exporting === 'csv' ? 'Exporting...' : 'Export as CSV'}
+                  {exporting === 'xlsx' ? 'Exporting...' : 'Export as XLSX'}
                 </Text>
               </Pressable>
             </ScrollView>

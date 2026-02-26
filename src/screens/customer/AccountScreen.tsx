@@ -1,16 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AddressPinMap } from '../../components/AddressPinMap';
+import { BrandAlertModal } from '../../components/BrandAlertModal';
 import { SearchableDropdown } from '../../components/SearchableDropdown';
+import { ThemeModeToggle } from '../../components/ThemeModeToggle';
+import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { useAddressLocations } from '../../hooks/useAddressLocations';
 import { CustomerStackParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
+import { reverseGeocodePoint } from '../../services/geocodingService';
+import { fetchActiveCustomerRestriction } from '../../services/chatModerationService';
 import {
   deleteCustomerAddress,
   fetchCustomerAddresses,
@@ -20,8 +25,10 @@ import {
   setDefaultAddress,
   toggleWishlist,
 } from '../../services/productService';
-import { CustomerAddress, Order, WishlistItem } from '../../types/models';
+import { useCartStore } from '../../store/cartStore';
+import { CustomerAddress, CustomerRestriction, Order, WishlistItem } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
+import { getProductBasePrice } from '../../utils/pricing';
 
 const DEFAULT_FORM = {
   firstName: '',
@@ -34,23 +41,37 @@ const DEFAULT_FORM = {
   postalCode: '',
   line1: '',
   line2: '',
+  latitude: null as number | null,
+  longitude: null as number | null,
 };
 
 export function AccountScreen() {
   const insets = useSafeAreaInsets();
-  const tabBarHeight = useBottomTabBarHeight();
   const navigation = useNavigation<NativeStackNavigationProp<CustomerStackParamList>>();
-  const { theme, mode, toggleTheme } = useTheme();
+  const { theme } = useTheme();
   const { role, profile, signOut } = useAuth();
+  const addItem = useCartStore((state) => state.addItem);
+  const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [wishlist, setWishlist] = useState<WishlistItem[]>([]);
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
+  const [activeRestriction, setActiveRestriction] = useState<CustomerRestriction | null>(null);
   const [addressForm, setAddressForm] = useState(DEFAULT_FORM);
   const [savingAddress, setSavingAddress] = useState(false);
   const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
+  const [autoFillFromPinBusy, setAutoFillFromPinBusy] = useState(false);
+  const [lastAutoFillPinKey, setLastAutoFillPinKey] = useState('');
   const { provinceOptions, cityOptions, barangayOptions, loadingLocations, isUsingFallback } = useAddressLocations(
     addressForm.province,
     addressForm.city,
+  );
+
+  const pinValue = useMemo(
+    () =>
+      Number.isFinite(addressForm.latitude) && Number.isFinite(addressForm.longitude)
+        ? { latitude: Number(addressForm.latitude), longitude: Number(addressForm.longitude) }
+        : null,
+    [addressForm.latitude, addressForm.longitude],
   );
 
   const loadData = useCallback(async () => {
@@ -58,23 +79,27 @@ export function AccountScreen() {
       setAddresses([]);
       setWishlist([]);
       setRecentOrders([]);
+      setActiveRestriction(null);
       return;
     }
 
     try {
-      const [nextAddresses, nextWishlist, nextOrders] = await Promise.all([
+      const [nextAddresses, nextWishlist, nextOrders, restriction] = await Promise.all([
         fetchCustomerAddresses(profile.id),
         fetchWishlist(profile.id),
         fetchCustomerOrders(profile.id),
+        fetchActiveCustomerRestriction(profile.id),
       ]);
 
       setAddresses(nextAddresses);
       setWishlist(nextWishlist);
       setRecentOrders(nextOrders.slice(0, 6));
+      setActiveRestriction(restriction);
     } catch {
       setAddresses([]);
       setWishlist([]);
       setRecentOrders([]);
+      setActiveRestriction(null);
     }
   }, [profile?.id, role]);
 
@@ -83,6 +108,48 @@ export function AccountScreen() {
       loadData();
     }, [loadData]),
   );
+
+  useEffect(() => {
+    if (!pinValue) {
+      return;
+    }
+
+    const pinKey = `${pinValue.latitude.toFixed(5)},${pinValue.longitude.toFixed(5)}`;
+    if (pinKey === lastAutoFillPinKey) {
+      return;
+    }
+
+    let active = true;
+    const timer = setTimeout(async () => {
+      try {
+        setAutoFillFromPinBusy(true);
+        const reversed = await reverseGeocodePoint(pinValue);
+        if (!active || !reversed) {
+          return;
+        }
+
+        setAddressForm((prev) => ({
+          ...prev,
+          countryRegion: reversed.countryRegion ?? prev.countryRegion,
+          province: reversed.province ?? prev.province,
+          city: reversed.city ?? prev.city,
+          barangay: reversed.barangay ?? prev.barangay,
+          postalCode: reversed.postalCode ?? prev.postalCode,
+          line1: reversed.line1 ?? reversed.displayName?.split(',')[0] ?? prev.line1,
+        }));
+        setLastAutoFillPinKey(pinKey);
+      } finally {
+        if (active) {
+          setAutoFillFromPinBusy(false);
+        }
+      }
+    }, 850);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [lastAutoFillPinKey, pinValue]);
 
   const saveAddress = async () => {
     if (!profile?.id) {
@@ -119,6 +186,8 @@ export function AccountScreen() {
         postalCode: addressForm.postalCode.trim(),
         line1: addressForm.line1.trim(),
         line2: addressForm.line2.trim() || undefined,
+        latitude: Number.isFinite(addressForm.latitude) ? Number(addressForm.latitude) : undefined,
+        longitude: Number.isFinite(addressForm.longitude) ? Number(addressForm.longitude) : undefined,
         isDefault: editingAddress?.isDefault ?? addresses.length === 0,
       });
       setAddressForm(DEFAULT_FORM);
@@ -140,7 +209,7 @@ export function AccountScreen() {
       contentContainerStyle={{
         paddingHorizontal: 14,
         paddingTop: insets.top + 10,
-        paddingBottom: tabBarHeight + 18,
+        paddingBottom: Math.max(insets.bottom, 8),
       }}
     >
       <Text style={[styles.title, { color: theme.colors.text }]}>Account</Text>
@@ -149,7 +218,7 @@ export function AccountScreen() {
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Appearance</Text>
         <View style={styles.switchRow}>
           <Text style={[styles.label, { color: theme.colors.textMuted }]}>Dark Mode</Text>
-          <Switch value={mode === 'dark'} onValueChange={toggleTheme} />
+          <ThemeModeToggle compact />
         </View>
       </View>
 
@@ -173,6 +242,13 @@ export function AccountScreen() {
           >
             <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Create Customer Account</Text>
           </Pressable>
+
+          <Pressable
+            style={[styles.secondaryButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+            onPress={() => navigation.navigate('Legal')}
+          >
+            <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Security, Privacy & Terms</Text>
+          </Pressable>
         </View>
       ) : (
         <>
@@ -180,6 +256,28 @@ export function AccountScreen() {
             <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Profile</Text>
             <Text style={[styles.label, { color: theme.colors.textMuted }]}>Name: {profile?.fullName}</Text>
             <Text style={[styles.label, { color: theme.colors.textMuted }]}>Email: {profile?.email}</Text>
+            {activeRestriction ? (
+              <Text style={[styles.label, { color: theme.colors.warning ?? '#F59E0B' }]}>
+                Account notice: {activeRestriction.reason}
+                {activeRestriction.endsAt ? ` (until ${new Date(activeRestriction.endsAt).toLocaleString()})` : ' (permanent)'}
+              </Text>
+            ) : null}
+          </View>
+
+          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Support</Text>
+            <Pressable
+              style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]}
+              onPress={() => navigation.navigate('ChatSeller')}
+            >
+              <Text style={[styles.primaryButtonText, { color: theme.colors.primaryContrast }]}>Chat Seller</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.secondaryButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+              onPress={() => navigation.navigate('Legal')}
+            >
+              <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Security, Privacy & Terms</Text>
+            </Pressable>
           </View>
 
           {/* Wishlist — redesigned with clickable cards */}
@@ -212,8 +310,36 @@ export function AccountScreen() {
                       </Text>
                       {item.product?.price ? (
                         <Text style={[styles.wishlistPrice, { color: theme.colors.primary }]}>
-                          {formatPHP(item.product.price)}
+                          {formatPHP(getProductBasePrice(item.product))}
                         </Text>
+                      ) : null}
+                      {item.product ? (
+                        <View style={styles.wishlistActions}>
+                          <Pressable
+                            style={[styles.wishlistActionBtn, { borderColor: theme.colors.border }]}
+                            onPress={() => {
+                              addItem(item.product!, 1, { unitPrice: getProductBasePrice(item.product!) });
+                              showAlert({
+                                title: 'Added to cart',
+                                message: `${item.product!.name} is ready in your cart.`,
+                                tone: 'success',
+                                actionLabel: 'View Cart',
+                                onAction: () => navigation.navigate('CustomerTabs', { screen: 'Cart' }),
+                              });
+                            }}
+                          >
+                            <Text style={[styles.wishlistActionText, { color: theme.colors.text }]}>Add to Cart</Text>
+                          </Pressable>
+                          <Pressable
+                            style={[styles.wishlistActionBtn, { borderColor: theme.colors.primary, backgroundColor: theme.colors.primary }]}
+                            onPress={() => {
+                              addItem(item.product!, 1, { unitPrice: getProductBasePrice(item.product!) });
+                              navigation.navigate('Checkout');
+                            }}
+                          >
+                            <Text style={[styles.wishlistActionText, { color: theme.colors.primaryContrast }]}>Checkout</Text>
+                          </Pressable>
+                        </View>
                       ) : null}
                     </View>
                     <Pressable
@@ -262,6 +388,8 @@ export function AccountScreen() {
                         postalCode: address.postalCode,
                         line1: address.line1,
                         line2: address.line2 ?? '',
+                        latitude: address.latitude ?? null,
+                        longitude: address.longitude ?? null,
                       });
                       setEditingAddressId(address.id);
                     }}
@@ -304,6 +432,59 @@ export function AccountScreen() {
             <Text style={[styles.cardTitle, { color: theme.colors.text }]}>
               {editingAddressId ? 'Edit Delivery Address' : 'Add New Delivery Address'}
             </Text>
+            <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
+              Tap map to pin your exact delivery location.
+            </Text>
+            <AddressPinMap
+              value={pinValue}
+              onChange={(next) =>
+                setAddressForm((prev) => ({
+                  ...prev,
+                  latitude: Number(next.latitude.toFixed(7)),
+                  longitude: Number(next.longitude.toFixed(7)),
+                }))
+              }
+            />
+            <View style={styles.pinMetaRow}>
+              <Text style={[styles.pinMeta, { color: theme.colors.textMuted }]}>
+                {Number.isFinite(addressForm.latitude) && Number.isFinite(addressForm.longitude)
+                  ? `Pinned: ${Number(addressForm.latitude).toFixed(5)}, ${Number(addressForm.longitude).toFixed(5)}`
+                  : 'No pinned location yet'}
+              </Text>
+              <Pressable
+                style={[styles.secondaryButtonMini, { borderColor: theme.colors.border }]}
+                onPress={async () => {
+                  if (!Number.isFinite(addressForm.latitude) || !Number.isFinite(addressForm.longitude)) {
+                    return;
+                  }
+
+                  const reversed = await reverseGeocodePoint({
+                    latitude: Number(addressForm.latitude),
+                    longitude: Number(addressForm.longitude),
+                  });
+                  if (!reversed) {
+                    return;
+                  }
+
+                  setAddressForm((prev) => ({
+                    ...prev,
+                    countryRegion: reversed.countryRegion ?? prev.countryRegion,
+                    province: reversed.province ?? prev.province,
+                    city: reversed.city ?? prev.city,
+                    barangay: reversed.barangay ?? prev.barangay,
+                    postalCode: reversed.postalCode ?? prev.postalCode,
+                    line1: reversed.line1 ?? reversed.displayName?.split(',')[0] ?? prev.line1,
+                  }));
+                }}
+              >
+                <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Auto-fill from pin</Text>
+              </Pressable>
+            </View>
+            {autoFillFromPinBusy ? (
+              <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
+                Detecting address details from your pinned location...
+              </Text>
+            ) : null}
             <View style={styles.formRow}>
               <TextInput
                 value={addressForm.firstName}
@@ -442,6 +623,8 @@ export function AccountScreen() {
       <Pressable style={styles.hiddenAccess} onLongPress={() => navigation.navigate('Auth', { mode: 'admin', intent: 'account' })}>
         <Text style={[styles.hiddenAccessText, { color: theme.colors.textMuted }]}>SUKI SEND v1.0.0</Text>
       </Pressable>
+
+      <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
     </ScrollView>
   );
 }
@@ -487,7 +670,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   wishlistCard: {
-    alignItems: 'center',
+    alignItems: 'flex-start',
     borderRadius: 12,
     borderWidth: 1,
     flexDirection: 'row',
@@ -520,6 +703,26 @@ const styles = StyleSheet.create({
   },
   wishlistRemoveButton: {
     padding: 6,
+    position: 'absolute',
+    right: 6,
+    top: 6,
+  },
+  wishlistActions: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 8,
+    width: '100%',
+  },
+  wishlistActionBtn: {
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    paddingVertical: 7,
+  },
+  wishlistActionText: {
+    fontSize: 11,
+    fontWeight: '800',
+    textAlign: 'center',
   },
   // Address
   inlineActions: {
@@ -551,6 +754,17 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
     marginBottom: -2,
+  },
+  pinMetaRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'space-between',
+  },
+  pinMeta: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '500',
   },
   primaryButton: {
     borderRadius: 999,

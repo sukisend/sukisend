@@ -1,13 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DarkTheme as NavigationDarkTheme, DefaultTheme as NavigationLightTheme, NavigationContainer } from '@react-navigation/native';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
+import { FullScreenVideoLoader } from '../components/FullScreenVideoLoader';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { OnboardingScreen } from '../screens/customer/OnboardingScreen';
 import { AdminNavigator } from './AdminNavigator';
 import { CustomerNavigator } from './CustomerNavigator';
+import { RiderNavigator } from './RiderNavigator';
+import { wait } from '../utils/async';
 
 const ONBOARDING_KEY = 'suki-send-has-seen-onboarding';
 
@@ -18,10 +20,12 @@ export function RootNavigator() {
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
 
   useEffect(() => {
-    AsyncStorage.getItem(ONBOARDING_KEY)
-      .then((value) => {
+    Promise.all([
+      AsyncStorage.getItem(ONBOARDING_KEY).then((value) => {
         setHasSeenOnboarding(value === 'true');
-      })
+      }),
+      wait(6000),
+    ])
       .finally(() => {
         setBootstrapping(false);
       });
@@ -62,10 +66,11 @@ export function RootNavigator() {
 
   if (bootstrapping || authLoading) {
     return (
-      <View style={[styles.loaderWrap, { backgroundColor: theme.colors.background }]}>
-        <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Text style={[styles.loaderText, { color: theme.colors.textMuted }]}>Preparing SUKI SEND...</Text>
-      </View>
+      <FullScreenVideoLoader
+        visible
+        label="Preparing SUKI SEND"
+        message="Loading your dashboard and syncing store updates."
+      />
     );
   }
 
@@ -73,18 +78,10 @@ export function RootNavigator() {
     return <OnboardingScreen onContinue={completeOnboarding} />;
   }
 
-  return <NavigationContainer theme={navTheme}>{role === 'admin' ? <AdminNavigator /> : <CustomerNavigator />}</NavigationContainer>;
+  return (
+    <NavigationContainer theme={navTheme}>
+      {role === 'admin' ? <AdminNavigator /> : role === 'rider' ? <RiderNavigator /> : <CustomerNavigator />}
+    </NavigationContainer>
+  );
 }
 
-const styles = StyleSheet.create({
-  loaderWrap: {
-    alignItems: 'center',
-    flex: 1,
-    justifyContent: 'center',
-  },
-  loaderText: {
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 10,
-  },
-});

@@ -1,21 +1,28 @@
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { BrandedLoader } from '../../components/BrandedLoader';
 import { EmptyState } from '../../components/EmptyState';
 import { ProductCard } from '../../components/ProductCard';
 import { SectionHeader } from '../../components/SectionHeader';
+import { useBrandAlert } from '../../hooks/useBrandAlert';
+import { useMinimumLoader } from '../../hooks/useMinimumLoader';
 import { CustomerStackParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 import { fetchPublicCategories, fetchPublicProducts, fetchWishlist, toggleWishlist } from '../../services/productService';
 import { useCartStore } from '../../store/cartStore';
 import { Category, Product, ProductSortOption } from '../../types/models';
+import { getProductBasePrice } from '../../utils/pricing';
+
+const PAGE_SIZE = 8;
 
 const SORT_OPTIONS: Array<{ id: ProductSortOption; label: string }> = [
+  { id: 'all', label: 'All' },
   { id: 'best_selling', label: 'By Selling' },
   { id: 'name_asc', label: 'A-Z' },
   { id: 'on_sale', label: 'On Sale' },
@@ -27,29 +34,75 @@ const SORT_OPTIONS: Array<{ id: ProductSortOption; label: string }> = [
 
 export function ExploreScreen() {
   const insets = useSafeAreaInsets();
-  const tabBarHeight = useBottomTabBarHeight();
   const navigation = useNavigation<NativeStackNavigationProp<CustomerStackParamList>>();
   const { theme } = useTheme();
   const { role, profile } = useAuth();
   const addItem = useCartStore((state) => state.addItem);
+  const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<ProductSortOption>('best_selling');
+  const [sortBy, setSortBy] = useState<ProductSortOption>('all');
   const [wishlistIds, setWishlistIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const showLoader = useMinimumLoader(loading, 6000);
 
   useEffect(() => {
-    Promise.all([fetchPublicProducts({ search, categoryId: selectedCategory, sort: sortBy }), fetchPublicCategories()])
-      .then(([nextProducts, nextCategories]) => {
-        setProducts(nextProducts);
-        setCategories(nextCategories);
-      })
-      .catch(() => {
-        setProducts([]);
-      });
+    fetchPublicCategories()
+      .then((rows) => setCategories(rows))
+      .catch(() => setCategories([]));
+  }, []);
+
+  useEffect(() => {
+    setPage(1);
   }, [search, selectedCategory, sortBy]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadProducts = async () => {
+      setLoading(true);
+      try {
+        const nextProducts = await fetchPublicProducts({
+          search,
+          categoryId: selectedCategory,
+          sort: sortBy,
+          page,
+          pageSize: PAGE_SIZE,
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        if (page > 1 && nextProducts.length === 0) {
+          setPage((prev) => Math.max(1, prev - 1));
+          return;
+        }
+
+        setProducts(nextProducts);
+        setHasNextPage(nextProducts.length === PAGE_SIZE);
+      } catch {
+        if (!cancelled) {
+          setProducts([]);
+          setHasNextPage(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadProducts();
+    return () => {
+      cancelled = true;
+    };
+  }, [page, search, selectedCategory, sortBy]);
 
   useEffect(() => {
     if (role !== 'customer' || !profile?.id) {
@@ -78,11 +131,27 @@ export function ExploreScreen() {
     }
   };
 
+  const handleAddToCart = (product: Product) => {
+    addItem(product, 1, { unitPrice: getProductBasePrice(product) });
+    showAlert({
+      title: 'Added to cart',
+      message: `${product.name} is ready in your cart.`,
+      tone: 'success',
+      actionLabel: 'View Cart',
+      onAction: () => navigation.navigate('CustomerTabs', { screen: 'Cart' }),
+    });
+  };
+
+  const selectableCategories = useMemo(() => {
+    const base: Category[] = [{ id: 'all', name: 'All' }];
+    return [...base, ...categories.filter((item) => item.id !== 'all')];
+  }, [categories]);
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       contentContainerStyle={{
-        paddingBottom: tabBarHeight + 24,
+        paddingBottom: Math.max(insets.bottom, 8),
         paddingHorizontal: 14,
         paddingTop: insets.top + 8,
       }}
@@ -106,7 +175,7 @@ export function ExploreScreen() {
         />
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryList}>
-          {categories.map((item) => {
+          {selectableCategories.map((item) => {
             const active = item.id === selectedCategory;
             return (
               <Pressable
@@ -149,21 +218,59 @@ export function ExploreScreen() {
           })}
         </ScrollView>
 
+        {showLoader ? <BrandedLoader compact label="Loading products..." /> : null}
+
         <View style={styles.productsList}>
           {products.map((item) => (
             <ProductCard
               key={item.id}
               product={item}
               onPress={() => navigation.navigate('ProductDetail', { product: item })}
-              onAdd={() => addItem(item, 1)}
+              onAdd={() => handleAddToCart(item)}
               wishlisted={wishlistIds.includes(item.id)}
               onToggleWishlist={() => onToggleWishlist(item.id)}
             />
           ))}
         </View>
 
-        {!products.length ? <EmptyState title="No products found" subtitle="Try another category or search keyword." /> : null}
+        {!loading && !products.length ? (
+          <EmptyState title="No products found" subtitle="Try another category or search keyword." />
+        ) : null}
+
+        {products.length > 0 || page > 1 ? (
+          <View style={styles.paginationRow}>
+            <Pressable
+              style={[
+                styles.pageButton,
+                { borderColor: theme.colors.border, backgroundColor: page === 1 ? theme.colors.surfaceAlt : theme.colors.surface },
+              ]}
+              disabled={page === 1}
+              onPress={() => setPage((prev) => Math.max(1, prev - 1))}
+            >
+              <Text style={[styles.pageButtonText, { color: page === 1 ? theme.colors.textMuted : theme.colors.text }]}>
+                Previous
+              </Text>
+            </Pressable>
+            <Text style={[styles.pageIndicator, { color: theme.colors.textMuted }]}>Page {page}</Text>
+            <Pressable
+              style={[
+                styles.pageButton,
+                {
+                  borderColor: theme.colors.border,
+                  backgroundColor: !hasNextPage || loading ? theme.colors.surfaceAlt : theme.colors.surface,
+                },
+              ]}
+              disabled={!hasNextPage || loading}
+              onPress={() => setPage((prev) => prev + 1)}
+            >
+              <Text style={[styles.pageButtonText, { color: !hasNextPage || loading ? theme.colors.textMuted : theme.colors.text }]}>
+                Next
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
+      <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
     </ScrollView>
   );
 }
@@ -215,5 +322,29 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 10,
     justifyContent: 'space-between',
+  },
+  paginationRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    marginTop: 6,
+    paddingBottom: 8,
+  },
+  pageButton: {
+    borderRadius: 10,
+    borderWidth: 1,
+    minWidth: 92,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  pageButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  pageIndicator: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

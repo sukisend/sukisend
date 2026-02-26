@@ -1,12 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { BrandedLoader } from '../../components/BrandedLoader';
 import { EmptyState } from '../../components/EmptyState';
 import { SectionHeader } from '../../components/SectionHeader';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
+import { useMinimumLoader } from '../../hooks/useMinimumLoader';
 import { useTheme } from '../../providers/ThemeProvider';
 import { pickAndUploadImages } from '../../services/mediaService';
 import {
@@ -21,6 +22,7 @@ import {
 import { Category, Product } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
 import { getCategoryIcon } from '../../utils/categoryIcons';
+import { clampPercent, computeSalePrice, getDiscountPercentFromPrice } from '../../utils/pricing';
 
 interface ProductFormState {
   id?: string;
@@ -32,6 +34,7 @@ interface ProductFormState {
   stock: string;
   minStock: string;
   sku: string;
+  discountPercent: string;
   description: string;
 }
 
@@ -60,11 +63,15 @@ const EMPTY_FORM: ProductFormState = {
   stock: '',
   minStock: '',
   sku: '',
+  discountPercent: '',
   description: '',
 };
-const EMPTY_VARIANT_DRAFT: VariantDraftState = { name: '', value: '', priceDelta: '0', stockOverride: '' };
+const EMPTY_VARIANT_DRAFT: VariantDraftState = { name: '', value: '', priceDelta: '', stockOverride: '' };
 const COMMON_UNITS = ['pcs', 'kg', 'g', 'oz', 'ml', 'L', 'cm', 'inch', 'box', 'pack'];
 const VARIANT_NAME_PRESETS = ['Color', 'Size', 'Weight', 'Volume', 'Length', 'Material', 'Pack'];
+const PAGE_SIZE = 8;
+const PRODUCT_IMAGE_LIMIT = 20;
+const DISCOUNT_PRESETS = [0, 5, 10, 15, 20, 30, 40, 50];
 const VARIANT_VALUE_PRESETS: Record<string, string[]> = {
   color: ['Orange', 'Blue', 'Red', 'Green', 'Black', 'White'],
   size: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
@@ -75,13 +82,15 @@ const VARIANT_VALUE_PRESETS: Record<string, string[]> = {
 };
 
 export function AdminProductsScreen() {
-  const tabBarHeight = useBottomTabBarHeight();
   const { theme } = useTheme();
   const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null);
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
   const [variants, setVariants] = useState<ProductVariantFormState[]>([]);
@@ -99,15 +108,28 @@ export function AdminProductsScreen() {
   const [editVariants, setEditVariants] = useState<ProductVariantFormState[]>([]);
   const [editVariantDraft, setEditVariantDraft] = useState<VariantDraftState>(EMPTY_VARIANT_DRAFT);
   const [editSaving, setEditSaving] = useState(false);
+  const [editUploadProgress, setEditUploadProgress] = useState<{ completed: number; total: number } | null>(null);
+  const showLoader = useMinimumLoader(loading, 6000);
 
-  const loadProducts = async () => {
+  const loadProducts = async (targetPage = page) => {
     setLoading(true);
     try {
-      const [next, availableCategories] = await Promise.all([fetchInventoryProducts(), fetchAdminCategories()]);
+      const [next, availableCategories] = await Promise.all([
+        fetchInventoryProducts({ page: targetPage, pageSize: PAGE_SIZE }),
+        fetchAdminCategories(),
+      ]);
+
+      if (targetPage > 1 && next.length === 0) {
+        setPage((prev) => Math.max(1, prev - 1));
+        return;
+      }
+
       setProducts(next);
+      setHasNextPage(next.length === PAGE_SIZE);
       setCategories(availableCategories);
     } catch {
       setProducts([]);
+      setHasNextPage(false);
       setCategories([]);
     } finally {
       setLoading(false);
@@ -115,13 +137,15 @@ export function AdminProductsScreen() {
   };
 
   useEffect(() => {
-    loadProducts();
-  }, []);
+    loadProducts(page);
+  }, [page]);
 
-  const normalizeVariantRows = (rows: ProductVariantFormState[]) =>
+  const normalizeVariantRows = (rows: ProductVariantFormState[], basePrice: number) =>
     rows
       .map((row) => {
-        const priceDelta = Number(row.priceDelta || '0');
+        const enteredPrice = row.priceDelta.trim() ? Number(row.priceDelta) : basePrice;
+        const variantPrice = Number.isFinite(enteredPrice) ? enteredPrice : basePrice;
+        const priceDelta = Number((variantPrice - basePrice).toFixed(2));
         const stockParsed = row.stockOverride.trim() ? Number(row.stockOverride) : null;
         return {
           id: row.id,
@@ -155,14 +179,14 @@ export function AdminProductsScreen() {
         {
           name,
           value,
-          priceDelta: draft.priceDelta.trim() || '0',
+          priceDelta: draft.priceDelta.trim(),
           stockOverride: draft.stockOverride.trim(),
           isActive: true,
         },
       ];
     });
 
-    setDraft((prev) => ({ ...prev, value: '', priceDelta: '0', stockOverride: '' }));
+    setDraft((prev) => ({ ...prev, value: '', priceDelta: '', stockOverride: '' }));
   };
 
   const resetForm = () => {
@@ -170,6 +194,7 @@ export function AdminProductsScreen() {
     setImageUrls([]);
     setVariants([]);
     setVariantDraft(EMPTY_VARIANT_DRAFT);
+    setUploadProgress(null);
   };
 
   const submitForm = async () => {
@@ -181,6 +206,9 @@ export function AdminProductsScreen() {
     const price = Number(form.price);
     const stock = Number(form.stock);
     const minStock = Number(form.minStock || '0');
+    const discountPercent = clampPercent(Number(form.discountPercent || '0'));
+    const salePrice = computeSalePrice(price, discountPercent);
+    const variantBasePrice = salePrice ?? price;
     if (!Number.isFinite(cost) || !Number.isFinite(price) || !Number.isFinite(stock)) {
       showAlert({ title: 'Invalid numbers', message: 'Cost, price, and stock must be valid numbers.', tone: 'error' });
       return;
@@ -198,7 +226,9 @@ export function AdminProductsScreen() {
         sku: form.sku.trim() || undefined,
         description: form.description.trim(),
         imageUrls,
-        variants: normalizeVariantRows(variants),
+        onSale: salePrice !== undefined,
+        salePrice,
+        variants: normalizeVariantRows(variants, variantBasePrice),
       });
       showAlert({ title: 'Saved', message: 'Product added.', tone: 'success' });
       resetForm();
@@ -222,15 +252,16 @@ export function AdminProductsScreen() {
       stock: String(product.stock),
       minStock: String(product.minStock),
       sku: product.sku ?? '',
+      discountPercent: String(getDiscountPercentFromPrice(product.price, product.salePrice, product.onSale) || ''),
       description: product.description ?? '',
     });
-    setEditImageUrls((product.images ?? []).map((img) => img.imageUrl).slice(0, 5));
+    setEditImageUrls((product.images ?? []).map((img) => img.imageUrl).slice(0, PRODUCT_IMAGE_LIMIT));
     setEditVariants(
       (product.variants ?? []).map((variant) => ({
         id: variant.id,
         name: variant.name,
         value: variant.value,
-        priceDelta: String(variant.priceDelta ?? 0),
+        priceDelta: String(Number(((product.onSale && product.salePrice !== undefined ? product.salePrice : product.price) + (variant.priceDelta ?? 0)).toFixed(2))),
         stockOverride: variant.stockOverride === undefined ? '' : String(variant.stockOverride),
         isActive: variant.isActive ?? true,
       })),
@@ -245,6 +276,9 @@ export function AdminProductsScreen() {
     const price = Number(editForm.price);
     const stock = Number(editForm.stock);
     const minStock = Number(editForm.minStock || '0');
+    const discountPercent = clampPercent(Number(editForm.discountPercent || '0'));
+    const salePrice = computeSalePrice(price, discountPercent);
+    const variantBasePrice = salePrice ?? price;
     if (!Number.isFinite(cost) || !Number.isFinite(price) || !Number.isFinite(stock)) {
       showAlert({ title: 'Invalid numbers', message: 'Cost, price, and stock must be valid numbers.', tone: 'error' });
       return;
@@ -263,7 +297,9 @@ export function AdminProductsScreen() {
         sku: editForm.sku.trim() || undefined,
         description: editForm.description.trim(),
         imageUrls: editImageUrls,
-        variants: normalizeVariantRows(editVariants),
+        onSale: salePrice !== undefined,
+        salePrice,
+        variants: normalizeVariantRows(editVariants, variantBasePrice),
       });
       setEditModalVisible(false);
       showAlert({ title: 'Updated', message: 'Product updated.', tone: 'success' });
@@ -289,7 +325,21 @@ export function AdminProductsScreen() {
 
   const restockProduct = async (product: Product) => {
     try {
-      await saveProduct({ id: product.id, name: product.name, categoryName: product.categoryName, unit: product.unit, cost: product.cost, price: product.price, stock: product.stock + 10, minStock: product.minStock, sku: product.sku, description: product.description, imageUrls: (product.images ?? []).map((img) => img.imageUrl).slice(0, 5) });
+      await saveProduct({
+        id: product.id,
+        name: product.name,
+        categoryName: product.categoryName,
+        unit: product.unit,
+        cost: product.cost,
+        price: product.price,
+        stock: product.stock + 10,
+        minStock: product.minStock,
+        sku: product.sku,
+        description: product.description,
+        imageUrls: (product.images ?? []).map((img) => img.imageUrl).slice(0, PRODUCT_IMAGE_LIMIT),
+        onSale: Boolean(product.onSale),
+        salePrice: product.salePrice,
+      });
       loadProducts();
     } catch (error) {
       showAlert({ title: 'Restock failed', message: error instanceof Error ? error.message : 'Unable to restock.', tone: 'error' });
@@ -332,12 +382,20 @@ export function AdminProductsScreen() {
     setF: React.Dispatch<React.SetStateAction<ProductFormState>>,
     imgs: string[],
     setImgs: React.Dispatch<React.SetStateAction<string[]>>,
+    imageUploadProgress: { completed: number; total: number } | null,
+    setImageUploadProgress: React.Dispatch<React.SetStateAction<{ completed: number; total: number } | null>>,
     variantRows: ProductVariantFormState[],
     setVariantRows: React.Dispatch<React.SetStateAction<ProductVariantFormState[]>>,
     draft: VariantDraftState,
     setDraft: React.Dispatch<React.SetStateAction<VariantDraftState>>,
   ) => {
     const changeField = (key: keyof ProductFormState, value: string) => setF((prev) => ({ ...prev, [key]: value }));
+    const fieldLabel = (label: string, required = false) => (
+      <Text style={[styles.fieldLabel, { color: theme.colors.textMuted }]}>
+        {label}
+        {required ? ' *' : ''}
+      </Text>
+    );
     const categoryQuery = f.categoryName.trim().toLowerCase();
     const categorySuggestions = categoryQuery
       ? categories.filter((category) => category.name.toLowerCase().includes(categoryQuery)).slice(0, 6)
@@ -346,6 +404,7 @@ export function AdminProductsScreen() {
 
     return (
       <>
+        {fieldLabel('Product Name', true)}
         <TextInput
           value={f.name}
           onChangeText={(v) => changeField('name', v)}
@@ -354,6 +413,7 @@ export function AdminProductsScreen() {
           style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
         />
 
+        {fieldLabel('Category', true)}
         <TextInput
           value={f.categoryName}
           onChangeText={(v) => changeField('categoryName', v)}
@@ -384,22 +444,14 @@ export function AdminProductsScreen() {
           </ScrollView>
         ) : null}
 
-        <View style={styles.row}>
-          <TextInput
-            value={f.unit}
-            onChangeText={(v) => changeField('unit', v)}
-            placeholder="Unit"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
-          <TextInput
-            value={f.sku}
-            onChangeText={(v) => changeField('sku', v)}
-            placeholder="SKU (opt)"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
-        </View>
+        {fieldLabel('Unit', true)}
+        <TextInput
+          value={f.unit}
+          onChangeText={(v) => changeField('unit', v)}
+          placeholder="Unit"
+          placeholderTextColor={theme.colors.textMuted}
+          style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+        />
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
           {COMMON_UNITS.map((unit) => {
@@ -417,46 +469,101 @@ export function AdminProductsScreen() {
         </ScrollView>
 
         <View style={styles.row}>
-          <TextInput
-            value={f.cost}
-            onChangeText={(v) => changeField('cost', v)}
-            placeholder="Cost"
-            keyboardType="decimal-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
-          <TextInput
-            value={f.price}
-            onChangeText={(v) => changeField('price', v)}
-            placeholder="Price"
-            keyboardType="decimal-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
+          <View style={styles.half}>
+            {fieldLabel('Cost', true)}
+            <TextInput
+              value={f.cost}
+              onChangeText={(v) => changeField('cost', v)}
+              placeholder="0.00"
+              keyboardType="decimal-pad"
+              placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+            />
+          </View>
+          <View style={styles.half}>
+            {fieldLabel('Price', true)}
+            <TextInput
+              value={f.price}
+              onChangeText={(v) => changeField('price', v)}
+              placeholder="0.00"
+              keyboardType="decimal-pad"
+              placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+            />
+          </View>
         </View>
         <View style={styles.row}>
-          <TextInput
-            value={f.stock}
-            onChangeText={(v) => changeField('stock', v)}
-            placeholder="Stock"
-            keyboardType="number-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
-          <TextInput
-            value={f.minStock}
-            onChangeText={(v) => changeField('minStock', v)}
-            placeholder="Min Alert"
-            keyboardType="number-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
+          <View style={styles.half}>
+            {fieldLabel('Discount %')}
+            <TextInput
+              value={f.discountPercent}
+              onChangeText={(v) => changeField('discountPercent', v)}
+              placeholder="0"
+              keyboardType="decimal-pad"
+              placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+            />
+          </View>
+          <View style={styles.half}>
+            {fieldLabel('Sale Price')}
+            <View style={[styles.input, styles.readonlyField, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}>
+              <Text style={[styles.readonlyText, { color: theme.colors.text }]}>
+                {(() => {
+                  const basePrice = Number(f.price);
+                  const percent = clampPercent(Number(f.discountPercent || '0'));
+                  const salePrice = computeSalePrice(basePrice, percent);
+                  return salePrice === undefined ? 'No sale' : formatPHP(salePrice);
+                })()}
+              </Text>
+            </View>
+          </View>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+          {DISCOUNT_PRESETS.map((percent) => {
+            const active = clampPercent(Number(f.discountPercent || '0')) === percent;
+            return (
+              <Pressable
+                key={percent}
+                style={[styles.chip, { backgroundColor: active ? theme.colors.primary : theme.colors.surfaceAlt }]}
+                onPress={() => changeField('discountPercent', percent === 0 ? '' : String(percent))}
+              >
+                <Text style={[styles.chipText, { color: active ? theme.colors.primaryContrast : theme.colors.text }]}>
+                  {percent === 0 ? 'No Sale' : `${percent}% Off`}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        <View style={styles.row}>
+          <View style={styles.half}>
+            {fieldLabel('Stock', true)}
+            <TextInput
+              value={f.stock}
+              onChangeText={(v) => changeField('stock', v)}
+              placeholder="0"
+              keyboardType="number-pad"
+              placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+            />
+          </View>
+          <View style={styles.half}>
+            {fieldLabel('Low Stock Alert')}
+            <TextInput
+              value={f.minStock}
+              onChangeText={(v) => changeField('minStock', v)}
+              placeholder="5"
+              keyboardType="number-pad"
+              placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+            />
+          </View>
         </View>
 
         <View style={[styles.variantCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
           <Text style={[styles.variantTitle, { color: theme.colors.text }]}>Variants (optional)</Text>
           <Text style={[styles.variantHint, { color: theme.colors.textMuted }]}>
             Add manual options like Color, Size, Weight, Volume, or custom choices.
+            Set Variant Price as final selling price for that option.
           </Text>
 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
@@ -472,38 +579,50 @@ export function AdminProductsScreen() {
           </ScrollView>
 
           <View style={styles.row}>
-            <TextInput
-              value={draft.name}
-              onChangeText={(value) => setDraft((prev) => ({ ...prev, name: value }))}
-              placeholder="Variant name (e.g. Color)"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-            />
-            <TextInput
-              value={draft.value}
-              onChangeText={(value) => setDraft((prev) => ({ ...prev, value }))}
-              placeholder="Variant value (e.g. Blue)"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-            />
+            <View style={styles.half}>
+              {fieldLabel('Variant Name')}
+              <TextInput
+                value={draft.name}
+                onChangeText={(value) => setDraft((prev) => ({ ...prev, name: value }))}
+                placeholder="e.g. Color"
+                placeholderTextColor={theme.colors.textMuted}
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+              />
+            </View>
+            <View style={styles.half}>
+              {fieldLabel('Variant Value')}
+              <TextInput
+                value={draft.value}
+                onChangeText={(value) => setDraft((prev) => ({ ...prev, value }))}
+                placeholder="e.g. Blue"
+                placeholderTextColor={theme.colors.textMuted}
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+              />
+            </View>
           </View>
           <View style={styles.row}>
-            <TextInput
-              value={draft.priceDelta}
-              onChangeText={(value) => setDraft((prev) => ({ ...prev, priceDelta: value }))}
-              placeholder="Price +/-"
-              keyboardType="decimal-pad"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-            />
-            <TextInput
-              value={draft.stockOverride}
-              onChangeText={(value) => setDraft((prev) => ({ ...prev, stockOverride: value }))}
-              placeholder="Stock override"
-              keyboardType="number-pad"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-            />
+            <View style={styles.half}>
+              {fieldLabel('Variant Price')}
+              <TextInput
+                value={draft.priceDelta}
+                onChangeText={(value) => setDraft((prev) => ({ ...prev, priceDelta: value }))}
+                placeholder={f.price || 'Same as base price'}
+                keyboardType="decimal-pad"
+                placeholderTextColor={theme.colors.textMuted}
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+              />
+            </View>
+            <View style={styles.half}>
+              {fieldLabel('Stock Override')}
+              <TextInput
+                value={draft.stockOverride}
+                onChangeText={(value) => setDraft((prev) => ({ ...prev, stockOverride: value }))}
+                placeholder="optional"
+                keyboardType="number-pad"
+                placeholderTextColor={theme.colors.textMuted}
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+              />
+            </View>
             <Pressable
               style={[styles.variantAddBtn, { backgroundColor: theme.colors.primary }]}
               onPress={() => addVariantFromDraft(draft, setDraft, setVariantRows)}
@@ -531,54 +650,66 @@ export function AdminProductsScreen() {
               {variantRows.map((variant, index) => (
                 <View key={`${variant.id ?? 'draft'}-${index}`} style={[styles.variantRowCard, { borderColor: theme.colors.border }]}>
                   <View style={styles.row}>
-                    <TextInput
-                      value={variant.name}
-                      onChangeText={(value) =>
-                        setVariantRows((prev) =>
-                          prev.map((row, rowIndex) => (rowIndex === index ? { ...row, name: value } : row)),
-                        )
-                      }
-                      placeholder="Name"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                    />
-                    <TextInput
-                      value={variant.value}
-                      onChangeText={(value) =>
-                        setVariantRows((prev) =>
-                          prev.map((row, rowIndex) => (rowIndex === index ? { ...row, value } : row)),
-                        )
-                      }
-                      placeholder="Value"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                    />
+                    <View style={styles.half}>
+                      {fieldLabel('Name')}
+                      <TextInput
+                        value={variant.name}
+                        onChangeText={(value) =>
+                          setVariantRows((prev) =>
+                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, name: value } : row)),
+                          )
+                        }
+                        placeholder="Name"
+                        placeholderTextColor={theme.colors.textMuted}
+                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                      />
+                    </View>
+                    <View style={styles.half}>
+                      {fieldLabel('Value')}
+                      <TextInput
+                        value={variant.value}
+                        onChangeText={(value) =>
+                          setVariantRows((prev) =>
+                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, value } : row)),
+                          )
+                        }
+                        placeholder="Value"
+                        placeholderTextColor={theme.colors.textMuted}
+                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                      />
+                    </View>
                   </View>
                   <View style={styles.row}>
-                    <TextInput
-                      value={variant.priceDelta}
-                      onChangeText={(value) =>
-                        setVariantRows((prev) =>
-                          prev.map((row, rowIndex) => (rowIndex === index ? { ...row, priceDelta: value } : row)),
-                        )
-                      }
-                      placeholder="Price +/-"
-                      keyboardType="decimal-pad"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                    />
-                    <TextInput
-                      value={variant.stockOverride}
-                      onChangeText={(value) =>
-                        setVariantRows((prev) =>
-                          prev.map((row, rowIndex) => (rowIndex === index ? { ...row, stockOverride: value } : row)),
-                        )
-                      }
-                      placeholder="Stock"
-                      keyboardType="number-pad"
-                      placeholderTextColor={theme.colors.textMuted}
-                      style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                    />
+                    <View style={styles.half}>
+                      {fieldLabel('Variant Price')}
+                      <TextInput
+                        value={variant.priceDelta}
+                        onChangeText={(value) =>
+                          setVariantRows((prev) =>
+                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, priceDelta: value } : row)),
+                          )
+                        }
+                        placeholder={f.price || 'Same as base price'}
+                        keyboardType="decimal-pad"
+                        placeholderTextColor={theme.colors.textMuted}
+                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                      />
+                    </View>
+                    <View style={styles.half}>
+                      {fieldLabel('Stock')}
+                      <TextInput
+                        value={variant.stockOverride}
+                        onChangeText={(value) =>
+                          setVariantRows((prev) =>
+                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, stockOverride: value } : row)),
+                          )
+                        }
+                        placeholder="optional"
+                        keyboardType="number-pad"
+                        placeholderTextColor={theme.colors.textMuted}
+                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                      />
+                    </View>
                     <Pressable
                       style={[styles.iconBtnLg, { backgroundColor: variant.isActive ? theme.colors.success : theme.colors.surfaceAlt }]}
                       onPress={() =>
@@ -604,6 +735,7 @@ export function AdminProductsScreen() {
           )}
         </View>
 
+        {fieldLabel('Description')}
         <TextInput
           value={f.description}
           onChangeText={(v) => changeField('description', v)}
@@ -616,21 +748,40 @@ export function AdminProductsScreen() {
         <Pressable
           style={[styles.uploadBtn, { borderColor: theme.colors.border }]}
           onPress={async () => {
+            if (imgs.length >= PRODUCT_IMAGE_LIMIT) {
+              showAlert({ title: 'Image limit reached', message: `You can upload up to ${PRODUCT_IMAGE_LIMIT} images per product.`, tone: 'info' });
+              return;
+            }
+
             try {
+              setImageUploadProgress({ completed: 0, total: Math.max(1, PRODUCT_IMAGE_LIMIT - imgs.length) });
               const urls = await pickAndUploadImages({
                 bucket: 'product-media',
                 folder: `products/${f.sku || f.name || Date.now().toString()}`,
-                maxImages: 5,
+                maxImages: Math.max(1, PRODUCT_IMAGE_LIMIT - imgs.length),
+                targetBytes: 1_000_000,
+                onProgress: (progress) => setImageUploadProgress(progress),
               });
-              if (urls.length > 0) setImgs(urls.slice(0, 5));
+              if (urls.length > 0) {
+                setImgs((prev) => Array.from(new Set([...prev, ...urls])).slice(0, PRODUCT_IMAGE_LIMIT));
+              }
             } catch (error) {
               showAlert({ title: 'Upload failed', message: error instanceof Error ? error.message : 'Unable to upload.', tone: 'error' });
+            } finally {
+              setImageUploadProgress(null);
             }
           }}
         >
           <Ionicons name="cloud-upload-outline" size={16} color={theme.colors.text} />
-          <Text style={[styles.uploadBtnText, { color: theme.colors.text }]}>Upload Images ({imgs.length}/5)</Text>
+          <Text style={[styles.uploadBtnText, { color: theme.colors.text }]}>
+            Upload Images ({imgs.length}/{PRODUCT_IMAGE_LIMIT})
+          </Text>
         </Pressable>
+        {imageUploadProgress ? (
+          <Text style={[styles.uploadProgressText, { color: theme.colors.textMuted }]}>
+            Uploading {Math.min(imageUploadProgress.completed, imageUploadProgress.total)}/{imageUploadProgress.total}...
+          </Text>
+        ) : null}
 
         {imgs.length > 0 ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.imgRow}>
@@ -651,14 +802,25 @@ export function AdminProductsScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
-      contentContainerStyle={[styles.content, { paddingBottom: tabBarHeight + 22 }]}
+      contentContainerStyle={[styles.content, { paddingBottom: 8 }]}
     >
       <SectionHeader title="Product Management" subtitle="Add, edit, and restock store inventory." />
 
       {/* ─── ADD PRODUCT (top) ─── */}
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Add Product</Text>
-        {renderFormFields(form, setForm, imageUrls, setImageUrls, variants, setVariants, variantDraft, setVariantDraft)}
+        {renderFormFields(
+          form,
+          setForm,
+          imageUrls,
+          setImageUrls,
+          uploadProgress,
+          setUploadProgress,
+          variants,
+          setVariants,
+          variantDraft,
+          setVariantDraft,
+        )}
         <View style={styles.row}>
           <Pressable style={[styles.primaryBtn, { backgroundColor: saving ? theme.colors.surfaceAlt : theme.colors.primary }]} disabled={saving} onPress={submitForm}>
             <Text style={[styles.primaryBtnText, { color: saving ? theme.colors.textMuted : theme.colors.primaryContrast }]}>
@@ -714,10 +876,16 @@ export function AdminProductsScreen() {
           ))}
         </View>
         <View style={styles.addCatRow}>
-          <TextInput value={newCategoryIcon} onChangeText={setNewCategoryIcon} placeholder="Icon" placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.iconField, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]} />
-          <TextInput value={newCategoryName} onChangeText={setNewCategoryName} placeholder="New category" placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, { flex: 1, borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]} />
+          <View style={styles.iconField}>
+            <Text style={[styles.fieldLabel, { color: theme.colors.textMuted }]}>Icon</Text>
+            <TextInput value={newCategoryIcon} onChangeText={setNewCategoryIcon} placeholder="Icon" placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]} />
+          </View>
+          <View style={styles.flexField}>
+            <Text style={[styles.fieldLabel, { color: theme.colors.textMuted }]}>Category Name</Text>
+            <TextInput value={newCategoryName} onChangeText={setNewCategoryName} placeholder="New category" placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]} />
+          </View>
           <Pressable style={[styles.addCatBtn, { backgroundColor: theme.colors.primary }]} onPress={handleAddCategory}>
             <Ionicons name="add" size={18} color={theme.colors.primaryContrast} />
           </Pressable>
@@ -725,7 +893,7 @@ export function AdminProductsScreen() {
       </View>
 
       {/* ─── PRODUCT LIST ─── */}
-      {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading...</Text> : null}
+      {showLoader ? <BrandedLoader compact label="Loading inventory..." /> : null}
       {!loading && !products.length ? <EmptyState title="No products" subtitle="Add your first product above." /> : null}
 
       <View style={styles.list}>
@@ -741,8 +909,13 @@ export function AdminProductsScreen() {
               )}
               <View style={styles.prodInfo}>
                 <Text style={[styles.prodName, { color: theme.colors.text }]} numberOfLines={1}>{product.name}</Text>
-                <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>{product.categoryName} | {product.unit} | {product.sku}</Text>
+                <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>{product.categoryName} | {product.unit}</Text>
                 <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>Cost: {formatPHP(product.cost)} | Price: {formatPHP(product.price)}</Text>
+                {product.onSale && product.salePrice !== undefined ? (
+                  <Text style={[styles.prodMeta, { color: theme.colors.primary }]}>
+                    On Sale: {formatPHP(product.salePrice)} ({getDiscountPercentFromPrice(product.price, product.salePrice, product.onSale)}% off)
+                  </Text>
+                ) : null}
                 <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>Variants: {(product.variants ?? []).filter((item) => item.isActive).length}</Text>
                 <Text style={[styles.stockText, { color: product.stock <= 0 ? theme.colors.danger : product.stock <= product.minStock ? theme.colors.warning : theme.colors.success }]}>
                   Stock: {product.stock}
@@ -766,6 +939,42 @@ export function AdminProductsScreen() {
         ))}
       </View>
 
+      {products.length > 0 || page > 1 ? (
+        <View style={styles.paginationRow}>
+          <Pressable
+            style={[
+              styles.pageBtn,
+              {
+                borderColor: theme.colors.border,
+                backgroundColor: page === 1 ? theme.colors.surfaceAlt : theme.colors.surface,
+              },
+            ]}
+            disabled={page === 1 || loading}
+            onPress={() => setPage((prev) => Math.max(1, prev - 1))}
+          >
+            <Text style={[styles.pageBtnText, { color: page === 1 ? theme.colors.textMuted : theme.colors.text }]}>
+              Previous
+            </Text>
+          </Pressable>
+          <Text style={[styles.pageIndicator, { color: theme.colors.textMuted }]}>Page {page}</Text>
+          <Pressable
+            style={[
+              styles.pageBtn,
+              {
+                borderColor: theme.colors.border,
+                backgroundColor: !hasNextPage || loading ? theme.colors.surfaceAlt : theme.colors.surface,
+              },
+            ]}
+            disabled={!hasNextPage || loading}
+            onPress={() => setPage((prev) => prev + 1)}
+          >
+            <Text style={[styles.pageBtnText, { color: !hasNextPage || loading ? theme.colors.textMuted : theme.colors.text }]}>
+              Next
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {/* ─── EDIT PRODUCT MODAL ─── */}
       <Modal visible={editModalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
@@ -782,6 +991,8 @@ export function AdminProductsScreen() {
                 setEditForm,
                 editImageUrls,
                 setEditImageUrls,
+                editUploadProgress,
+                setEditUploadProgress,
                 editVariants,
                 setEditVariants,
                 editVariantDraft,
@@ -812,7 +1023,10 @@ const styles = StyleSheet.create({
   content: { gap: 10, padding: 14 },
   card: { borderRadius: 14, borderWidth: 1, padding: 12, rowGap: 8 },
   cardTitle: { fontSize: 16, fontWeight: '800' },
+  fieldLabel: { fontSize: 11, fontWeight: '700', marginBottom: 4 },
   input: { borderRadius: 10, borderWidth: 1, fontSize: 13, paddingHorizontal: 10, paddingVertical: 9 },
+  readonlyField: { justifyContent: 'center' },
+  readonlyText: { fontSize: 13, fontWeight: '700' },
   row: { flexDirection: 'row', gap: 8 },
   half: { flex: 1, minWidth: 0 },
   multiline: { minHeight: 56, textAlignVertical: 'top' },
@@ -833,6 +1047,7 @@ const styles = StyleSheet.create({
   outlineBtnText: { fontSize: 13, fontWeight: '700', textAlign: 'center' },
   uploadBtn: { alignItems: 'center', borderRadius: 10, borderWidth: 1, flexDirection: 'row', gap: 6, justifyContent: 'center', paddingVertical: 10 },
   uploadBtnText: { fontSize: 12, fontWeight: '700' },
+  uploadProgressText: { fontSize: 11, fontWeight: '600' },
   imgRow: { gap: 8, paddingVertical: 4 },
   imgWrap: { position: 'relative' },
   imgThumb: { borderRadius: 8, height: 56, width: 56 },
@@ -848,8 +1063,9 @@ const styles = StyleSheet.create({
   catEditFullRow: { alignItems: 'center', borderRadius: 10, borderWidth: 1, flexDirection: 'row', gap: 8, marginBottom: 6, paddingHorizontal: 10, paddingVertical: 8 },
   catEditInput: { borderRadius: 8, borderWidth: 1, flex: 1, fontSize: 13, paddingHorizontal: 10, paddingVertical: 8 },
   iconBtnLg: { alignItems: 'center', borderRadius: 8, height: 36, justifyContent: 'center', width: 36 },
-  addCatRow: { alignItems: 'center', flexDirection: 'row', gap: 8 },
-  iconField: { width: 64 },
+  addCatRow: { alignItems: 'flex-end', flexDirection: 'row', gap: 8 },
+  iconField: { width: 70 },
+  flexField: { flex: 1 },
   catIconInput: { borderRadius: 8, borderWidth: 1, fontSize: 16, paddingHorizontal: 10, paddingVertical: 8, width: 56 },
   addCatBtn: { alignItems: 'center', borderRadius: 10, height: 40, justifyContent: 'center', width: 40 },
   // Product list compact
@@ -865,6 +1081,10 @@ const styles = StyleSheet.create({
   prodActions: { flexDirection: 'row', gap: 6 },
   actionBtn: { alignItems: 'center', borderRadius: 8, borderWidth: 1, flexDirection: 'row', gap: 4, paddingHorizontal: 8, paddingVertical: 5 },
   actionBtnText: { fontSize: 11, fontWeight: '700' },
+  paginationRow: { alignItems: 'center', flexDirection: 'row', gap: 10, justifyContent: 'center', paddingTop: 4, paddingBottom: 8 },
+  pageBtn: { borderRadius: 10, borderWidth: 1, minWidth: 96, paddingHorizontal: 14, paddingVertical: 9 },
+  pageBtnText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
+  pageIndicator: { fontSize: 12, fontWeight: '700' },
   // Edit modal
   modalOverlay: { backgroundColor: 'rgba(0,0,0,0.5)', flex: 1, justifyContent: 'center', padding: 16 },
   modalContent: { borderRadius: 16, borderWidth: 1, maxHeight: '90%', overflow: 'hidden' },

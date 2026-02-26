@@ -150,9 +150,11 @@ function buildMetrics(products: Product[], orders: Order[]): {
         existing.qty += item.quantity;
         existing.sales += item.lineTotal;
       } else {
+        const product = productById.get(item.productId);
         byProduct.set(item.productId, {
           productId: item.productId,
           name: item.productName,
+          imageUrl: product?.imageUrl,
           qty: item.quantity,
           sales: item.lineTotal,
         });
@@ -362,14 +364,22 @@ export async function deleteProduct(id: string) {
   }
 }
 
-export async function fetchInventoryProducts(): Promise<Product[]> {
+export async function fetchInventoryProducts(input?: { page?: number; pageSize?: number }): Promise<Product[]> {
+  const page = Math.max(1, Number(input?.page ?? 1));
+  const rawPageSize = Number(input?.pageSize ?? 0);
+  const pageSize = Number.isFinite(rawPageSize) && rawPageSize > 0 ? Math.floor(rawPageSize) : 0;
+
   if (!supabase) {
-    return [...localProducts].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = [...localProducts].sort((a, b) => a.name.localeCompare(b.name));
+    if (!pageSize) {
+      return sorted;
+    }
+
+    const start = (page - 1) * pageSize;
+    return sorted.slice(start, start + pageSize);
   }
 
-  const { data, error } = await supabase
-    .from('products')
-    .select(
+  let query = supabase.from('products').select(
       `
       id,
       name,
@@ -390,8 +400,17 @@ export async function fetchInventoryProducts(): Promise<Product[]> {
       product_images ( id, product_id, image_url, sort_order ),
       product_variants ( id, product_id, name, value, price_delta, stock_override, is_active )
     `,
-    )
-    .order('created_at', { ascending: false });
+    );
+
+  if (pageSize > 0) {
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize - 1;
+    query = query.range(start, end);
+  }
+
+  query = query.order('created_at', { ascending: false });
+
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(error.message);
@@ -552,6 +571,9 @@ export async function saveProduct(input: {
   sku?: string;
   imageUrls?: string[];
   isActive?: boolean;
+  onSale?: boolean;
+  salePrice?: number;
+  sortPriority?: number;
   variants?: SaveProductVariantInput[];
 }) {
   if (!supabase) {
@@ -571,6 +593,12 @@ export async function saveProduct(input: {
       stock: input.stock,
       minStock: input.minStock,
       imageUrl: input.imageUrls?.[0],
+      images: (input.imageUrls ?? []).map((imageUrl, index) => ({
+        id: `mock-image-${Date.now()}-${index}`,
+        productId,
+        imageUrl,
+        sortOrder: index,
+      })),
       variants:
         input.variants?.map((variant) => ({
           id: variant.id ?? `mock-var-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -581,6 +609,9 @@ export async function saveProduct(input: {
           stockOverride: variant.stockOverride,
           isActive: variant.isActive ?? true,
         })) ?? [],
+      onSale: Boolean(input.onSale ?? false),
+      salePrice: input.salePrice,
+      sortPriority: Number(input.sortPriority ?? 0),
       isActive: input.isActive ?? true,
     };
 
@@ -605,6 +636,9 @@ export async function saveProduct(input: {
     min_stock: input.minStock,
     sku: input.sku || `${input.categoryName.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-6)}`,
     image_url: input.imageUrls?.[0] ?? null,
+    on_sale: input.onSale ?? false,
+    sale_price: input.onSale ? input.salePrice ?? null : null,
+    sort_priority: input.sortPriority ?? 0,
     is_active: input.isActive ?? true,
   };
 
@@ -636,22 +670,24 @@ export async function saveProduct(input: {
     throw new Error(error.message);
   }
 
-  if (input.imageUrls && input.imageUrls.length) {
+  if (input.imageUrls) {
     const productId = data.id as string;
     const { error: clearError } = await supabase.from('product_images').delete().eq('product_id', productId);
     if (clearError) {
       throw new Error(clearError.message);
     }
 
-    const { error: imageError } = await supabase.from('product_images').insert(
-      input.imageUrls.slice(0, 5).map((imageUrl, index) => ({
-        product_id: productId,
-        image_url: imageUrl,
-        sort_order: index,
-      })),
-    );
-    if (imageError) {
-      throw new Error(imageError.message);
+    if (input.imageUrls.length) {
+      const { error: imageError } = await supabase.from('product_images').insert(
+        input.imageUrls.slice(0, 20).map((imageUrl, index) => ({
+          product_id: productId,
+          image_url: imageUrl,
+          sort_order: index,
+        })),
+      );
+      if (imageError) {
+        throw new Error(imageError.message);
+      }
     }
   }
 

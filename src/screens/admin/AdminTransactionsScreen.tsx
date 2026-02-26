@@ -1,8 +1,8 @@
 ﻿import { Ionicons } from '@expo/vector-icons';
 import dayjs from 'dayjs';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import * as Location from 'expo-location';
 
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { EmptyState } from '../../components/EmptyState';
@@ -18,16 +18,14 @@ import {
   saveShippingMethod,
   updateOrderStatus,
 } from '../../services/adminService';
+import { fetchDeliveryRatePerKmSetting, saveDeliveryRatePerKmSetting } from '../../services/settingsService';
 import { DateRange, Order, OrderStatus, SalesRangePreset, ShippingMethod } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
 import { formatDateTime } from '../../utils/date';
 
 const NEXT_ACTIONS: Partial<Record<OrderStatus, OrderStatus[]>> = {
   pending: ['approved', 'cancelled'],
-  approved: ['preparing', 'cancelled'],
-  confirmed: ['preparing', 'cancelled'],
-  preparing: ['shipped', 'cancelled'],
-  packed: ['shipped', 'cancelled'],
+  approved: ['shipped', 'cancelled'],
   shipped: ['out_for_delivery'],
   out_for_delivery: ['delivered'],
   delivered: ['completed'],
@@ -37,9 +35,9 @@ const NEXT_ACTIONS: Partial<Record<OrderStatus, OrderStatus[]>> = {
 const STATUS_LABEL: Record<OrderStatus, string> = {
   pending: 'Pending',
   approved: 'Approved',
-  confirmed: 'Confirmed',
-  preparing: 'Preparing',
-  packed: 'Packed',
+  confirmed: 'Approved',
+  preparing: 'Approved',
+  packed: 'Approved',
   shipped: 'Shipped',
   out_for_delivery: 'Out for Delivery',
   delivered: 'Delivered',
@@ -49,12 +47,17 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
   cancelled: 'Cancelled',
 };
 
+function normalizeOrderStatus(status: OrderStatus): OrderStatus {
+  if (status === 'confirmed' || status === 'preparing' || status === 'packed') {
+    return 'approved';
+  }
+
+  return status;
+}
+
 const STATUS_SECTIONS: Array<{ status: OrderStatus; title: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { status: 'pending', title: 'Order Placed', icon: 'time-outline' },
   { status: 'approved', title: 'Approved', icon: 'checkmark-done-outline' },
-  { status: 'confirmed', title: 'Confirmed', icon: 'checkmark-circle-outline' },
-  { status: 'preparing', title: 'Preparing', icon: 'construct-outline' },
-  { status: 'packed', title: 'Packed', icon: 'cube-outline' },
   { status: 'shipped', title: 'Shipped', icon: 'car-outline' },
   { status: 'out_for_delivery', title: 'Out for Delivery', icon: 'navigate-outline' },
   { status: 'delivered', title: 'Delivered', icon: 'checkmark-circle-outline' },
@@ -81,7 +84,6 @@ const EMPTY_SHIPPING_FORM: ShippingForm = {
 };
 
 export function AdminTransactionsScreen() {
-  const tabBarHeight = useBottomTabBarHeight();
   const { theme } = useTheme();
   const [rangePreset, setRangePreset] = useState<SalesRangePreset>('today');
   const [customRange, setCustomRange] = useState({
@@ -92,12 +94,15 @@ export function AdminTransactionsScreen() {
   const [refunds, setRefunds] = useState<any[]>([]);
   const [shippingMethods, setShippingMethods] = useState<ShippingMethod[]>([]);
   const [shippingForm, setShippingForm] = useState<ShippingForm>(EMPTY_SHIPPING_FORM);
+  const [deliveryRateInput, setDeliveryRateInput] = useState('20');
+  const [deliveryRateMessage, setDeliveryRateMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [savingShipping, setSavingShipping] = useState(false);
+  const [savingDeliveryRate, setSavingDeliveryRate] = useState(false);
   const [expandedSection, setExpandedSection] = useState<OrderStatus | null>('pending');
   const [statusNotes, setStatusNotes] = useState<Record<string, string>>({});
-  const [statusLat, setStatusLat] = useState<Record<string, string>>({});
-  const [statusLng, setStatusLng] = useState<Record<string, string>>({});
+  const [liveTrackingOrderId, setLiveTrackingOrderId] = useState<string | null>(null);
+  const liveTrackingSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
 
   const rangeIso: DateRange = useMemo(
     () => ({
@@ -124,7 +129,8 @@ export function AdminTransactionsScreen() {
     };
 
     for (const order of transactions) {
-      grouped[order.status].push(order);
+      const normalizedStatus = normalizeOrderStatus(order.status);
+      grouped[normalizedStatus].push(order);
     }
 
     return grouped;
@@ -133,18 +139,22 @@ export function AdminTransactionsScreen() {
   const loadTransactions = async () => {
     setLoading(true);
     try {
-      const [rows, shipping, openRefunds] = await Promise.all([
+      const [rows, shipping, openRefunds, deliveryRate] = await Promise.all([
         fetchRecentTransactions(80, rangePreset, rangePreset === 'custom' ? rangeIso : undefined),
         fetchShippingMethodsAdmin(),
         fetchOpenRefundRequests(),
+        fetchDeliveryRatePerKmSetting(),
       ]);
       setTransactions(rows);
       setShippingMethods(shipping);
       setRefunds(openRefunds);
+      setDeliveryRateInput(String(deliveryRate));
+      setDeliveryRateMessage('');
     } catch {
       setTransactions([]);
       setShippingMethods([]);
       setRefunds([]);
+      setDeliveryRateMessage('');
     } finally {
       setLoading(false);
     }
@@ -154,26 +164,91 @@ export function AdminTransactionsScreen() {
     loadTransactions();
   }, [rangePreset, rangeIso.start, rangeIso.end]);
 
-  const handleStatusUpdate = async (order: Order, nextStatus: OrderStatus) => {
-    const note = (statusNotes[order.id] ?? '').trim() || `Order is now ${STATUS_LABEL[nextStatus].toLowerCase()}.`;
-    const latValue = (statusLat[order.id] ?? '').trim();
-    const lngValue = (statusLng[order.id] ?? '').trim();
-    const lat = latValue ? Number(latValue) : undefined;
-    const lng = lngValue ? Number(lngValue) : undefined;
+  useEffect(() => {
+    return () => {
+      liveTrackingSubscriptionRef.current?.remove();
+      liveTrackingSubscriptionRef.current = null;
+    };
+  }, []);
 
-    if ((latValue && !Number.isFinite(lat)) || (lngValue && !Number.isFinite(lng))) {
-      return;
+  const getCurrentCoordinates = async () => {
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (!permission.granted) {
+      return null;
     }
 
+    const current = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Balanced,
+    });
+
+    return {
+      latitude: Number(current.coords.latitude.toFixed(7)),
+      longitude: Number(current.coords.longitude.toFixed(7)),
+    };
+  };
+
+  const handleStatusUpdate = async (order: Order, nextStatus: OrderStatus) => {
+    const note = (statusNotes[order.id] ?? '').trim() || `Order is now ${STATUS_LABEL[nextStatus].toLowerCase()}.`;
+
     try {
-      await updateOrderStatus(order.id, nextStatus, note || undefined, lat, lng);
+      const nextNormalized = normalizeOrderStatus(nextStatus);
+      const coords =
+        nextNormalized === 'shipped' || nextNormalized === 'out_for_delivery' || nextNormalized === 'delivered'
+          ? await getCurrentCoordinates()
+          : null;
+
+      await updateOrderStatus(order.id, nextStatus, note || undefined, coords?.latitude, coords?.longitude);
       setStatusNotes((prev) => ({ ...prev, [order.id]: '' }));
-      setStatusLat((prev) => ({ ...prev, [order.id]: '' }));
-      setStatusLng((prev) => ({ ...prev, [order.id]: '' }));
       await loadTransactions();
     } catch {
       // keep current UI state
     }
+  };
+
+  const stopLiveTracking = () => {
+    liveTrackingSubscriptionRef.current?.remove();
+    liveTrackingSubscriptionRef.current = null;
+    setLiveTrackingOrderId(null);
+  };
+
+  const startLiveTracking = async (order: Order) => {
+    if (liveTrackingOrderId === order.id) {
+      stopLiveTracking();
+      return;
+    }
+
+    stopLiveTracking();
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (!permission.granted) {
+      return;
+    }
+
+    const normalizedStatus = normalizeOrderStatus(order.status);
+    const subscription = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.Balanced,
+        distanceInterval: 15,
+        timeInterval: 6000,
+      },
+      async (position: Location.LocationObject) => {
+        const lat = Number(position.coords.latitude.toFixed(7));
+        const lng = Number(position.coords.longitude.toFixed(7));
+        try {
+          await updateOrderStatus(
+            order.id,
+            normalizedStatus,
+            'Live rider location update',
+            lat,
+            lng,
+          );
+        } catch {
+          // Keep live tracking active even when single update fails.
+        }
+      },
+    );
+
+    liveTrackingSubscriptionRef.current = subscription;
+    setLiveTrackingOrderId(order.id);
   };
 
   const submitShippingMethod = async () => {
@@ -199,6 +274,25 @@ export function AdminTransactionsScreen() {
     }
   };
 
+  const submitDeliveryRate = async () => {
+    const rate = Number(deliveryRateInput);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      setDeliveryRateMessage('Rate must be greater than zero.');
+      return;
+    }
+
+    setSavingDeliveryRate(true);
+    try {
+      await saveDeliveryRatePerKmSetting(rate);
+      setDeliveryRateMessage(`Saved ${formatPHP(rate)}/km`);
+      await loadTransactions();
+    } catch (error) {
+      setDeliveryRateMessage(error instanceof Error ? error.message : 'Unable to save delivery rate.');
+    } finally {
+      setSavingDeliveryRate(false);
+    }
+  };
+
   const toggleSection = (section: OrderStatus) => {
     setExpandedSection((prev) => (prev === section ? null : section));
   };
@@ -207,9 +301,6 @@ export function AdminTransactionsScreen() {
     switch (status) {
       case 'pending':
       case 'approved':
-      case 'confirmed':
-      case 'preparing':
-      case 'packed':
       case 'shipped':
       case 'out_for_delivery':
         return theme.colors.primary;
@@ -227,13 +318,14 @@ export function AdminTransactionsScreen() {
   };
 
   const renderCompactOrder = (order: Order) => {
-    const actions = NEXT_ACTIONS[order.status] ?? [];
+    const displayStatus = normalizeOrderStatus(order.status);
+    const actions = NEXT_ACTIONS[displayStatus] ?? [];
 
     return (
       <View key={order.id} style={[styles.orderRow, { borderColor: theme.colors.border }]}>
         <View style={styles.orderHead}>
           <Text style={[styles.orderNo, { color: theme.colors.text }]}>{order.orderNo}</Text>
-          <Text style={[styles.statusBadge, { color: theme.colors.primary }]}>{STATUS_LABEL[order.status]}</Text>
+          <Text style={[styles.statusBadge, { color: theme.colors.primary }]}>{STATUS_LABEL[displayStatus]}</Text>
         </View>
 
         <View style={styles.orderMeta}>
@@ -259,33 +351,6 @@ export function AdminTransactionsScreen() {
           style={[styles.noteInput, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
         />
 
-        <View style={styles.coordsRow}>
-          <TextInput
-            value={statusLat[order.id] ?? ''}
-            onChangeText={(value) => setStatusLat((prev) => ({ ...prev, [order.id]: value }))}
-            placeholder="Lat (opt)"
-            keyboardType="decimal-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[
-              styles.input,
-              styles.coordInput,
-              { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
-            ]}
-          />
-          <TextInput
-            value={statusLng[order.id] ?? ''}
-            onChangeText={(value) => setStatusLng((prev) => ({ ...prev, [order.id]: value }))}
-            placeholder="Lng (opt)"
-            keyboardType="decimal-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[
-              styles.input,
-              styles.coordInput,
-              { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
-            ]}
-          />
-        </View>
-
         {actions.length ? (
           <View style={styles.actionRow}>
             {actions.map((next) => (
@@ -297,6 +362,21 @@ export function AdminTransactionsScreen() {
                 <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>{STATUS_LABEL[next]}</Text>
               </Pressable>
             ))}
+            {['approved', 'shipped', 'out_for_delivery'].includes(displayStatus) ? (
+              <Pressable
+                style={[styles.actionBtn, { borderColor: theme.colors.border, backgroundColor: liveTrackingOrderId === order.id ? theme.colors.primary : theme.colors.surface }]}
+                onPress={() => startLiveTracking(order)}
+              >
+                <Text
+                  style={[
+                    styles.actionBtnText,
+                    { color: liveTrackingOrderId === order.id ? theme.colors.primaryContrast : theme.colors.text },
+                  ]}
+                >
+                  {liveTrackingOrderId === order.id ? 'Stop Live GPS' : 'Start Live GPS'}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
       </View>
@@ -327,7 +407,7 @@ export function AdminTransactionsScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
-      contentContainerStyle={[styles.content, { paddingBottom: tabBarHeight + 22 }]}
+      contentContainerStyle={[styles.content, { paddingBottom: 8 }]}
     >
       <SectionHeader title="Transactions" subtitle="Manage orders, shipping, and refunds." />
 
@@ -338,6 +418,30 @@ export function AdminTransactionsScreen() {
 
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Shipping Methods</Text>
+        <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Distance fee rate (per km)</Text>
+        <View style={styles.row}>
+          <TextInput
+            value={deliveryRateInput}
+            onChangeText={setDeliveryRateInput}
+            placeholder="20"
+            keyboardType="decimal-pad"
+            placeholderTextColor={theme.colors.textMuted}
+            style={[
+              styles.input,
+              styles.feeInput,
+              { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
+            ]}
+          />
+          <Pressable
+            style={[styles.applyRateBtn, { backgroundColor: savingDeliveryRate ? theme.colors.surfaceAlt : theme.colors.primary }]}
+            onPress={submitDeliveryRate}
+          >
+            <Text style={[styles.applyRateText, { color: theme.colors.primaryContrast }]}>
+              {savingDeliveryRate ? 'Saving...' : 'Apply Rate'}
+            </Text>
+          </Pressable>
+        </View>
+        {deliveryRateMessage ? <Text style={[styles.meta, { color: theme.colors.textMuted }]}>{deliveryRateMessage}</Text> : null}
 
         {shippingMethods.map((method) => (
           <View key={method.id} style={[styles.shipRow, { borderColor: theme.colors.border }]}>
@@ -458,6 +562,8 @@ const styles = StyleSheet.create({
   row: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   flex1: { flex: 1 },
   feeInput: { width: 74 },
+  applyRateBtn: { alignItems: 'center', borderRadius: 10, justifyContent: 'center', minHeight: 38, paddingHorizontal: 12 },
+  applyRateText: { fontSize: 12, fontWeight: '800' },
   input: { borderRadius: 10, borderWidth: 1, fontSize: 13, paddingHorizontal: 8, paddingVertical: 8 },
   meta: { fontSize: 11, fontWeight: '500' },
   helper: { fontSize: 13, fontWeight: '500' },
@@ -487,8 +593,6 @@ const styles = StyleSheet.create({
   orderMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   orderTotal: { fontSize: 14, fontWeight: '900' },
   noteInput: { borderRadius: 8, borderWidth: 1, fontSize: 12, marginTop: 6, paddingHorizontal: 8, paddingVertical: 7 },
-  coordsRow: { flexDirection: 'row', gap: 6, marginTop: 6 },
-  coordInput: { flex: 1, minWidth: 0 },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
   actionBtn: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 5 },
   actionBtnText: { fontSize: 11, fontWeight: '700' },

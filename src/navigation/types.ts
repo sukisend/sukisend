@@ -12,7 +12,13 @@ export type CustomerTabsParamList = {
 export type CustomerStackParamList = {
   CustomerTabs: NavigatorScreenParams<CustomerTabsParamList> | undefined;
   ProductDetail: { product: Product };
-  Checkout: undefined;
+  Checkout:
+    | {
+        selectedKeys?: string[];
+      }
+    | undefined;
+  ChatSeller: undefined;
+  Legal: undefined;
   Auth: {
     mode?: 'signin' | 'signup' | 'admin';
     intent?: 'checkout' | 'account';
@@ -25,4 +31,9 @@ export type AdminTabsParamList = {
   Transactions: undefined;
   Reports: undefined;
   AdminAccount: undefined;
+};
+
+export type RiderTabsParamList = {
+  Deliveries: undefined;
+  RiderAccount: undefined;
 };

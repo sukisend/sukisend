@@ -27,6 +27,10 @@ Then launch Android/iOS from Expo.
    - `EXPO_PUBLIC_SUPABASE_EMAIL_REDIRECT`
 3. Open Supabase SQL editor and run:
    - [`supabase/schema.sql`](./supabase/schema.sql)
+   - If your DB was already deployed before the latest update, run [`supabase/upgrade_address_rate.sql`](./supabase/upgrade_address_rate.sql) too.
+   - Run [`supabase/upgrade_chat_moderation.sql`](./supabase/upgrade_chat_moderation.sql) for chat seller + customer moderation.
+   - Run [`supabase/upgrade_rider_tracking.sql`](./supabase/upgrade_rider_tracking.sql) for rider role + live GPS delivery tracking.
+   - If checkout RPC is outdated, run [`supabase/fix_checkout.sql`](./supabase/fix_checkout.sql).
 4. For professional branded confirmation emails:
    - follow [`supabase/email-templates/README.md`](./supabase/email-templates/README.md)
 
@@ -42,6 +46,14 @@ set role = 'admin'
 where id = 'USER_UUID_HERE';
 ```
 
+Promote a rider account with SQL:
+
+```sql
+update public.profiles
+set role = 'rider'
+where id = 'USER_UUID_HERE';
+```
+
 ## 4. What is implemented
 
 ### Customer side
@@ -50,6 +62,7 @@ where id = 'USER_UUID_HERE';
 - Search + category filtering + product sorting
 - Product details with quantity and optional variants
 - Wishlist saved items
+- Chat seller (customer-to-store conversation)
 - Checkout requires login/signup
 - COD order placement with shipping method and address book
 - Customer order history with:
@@ -70,10 +83,15 @@ where id = 'USER_UUID_HERE';
   - cost
   - price
   - stock and min stock
-  - up to 5 optimized product images
+  - up to 20 optimized product images
 - Recent transaction monitoring (COD)
 - Order approval/cancel/status progression workflow
 - Shipping method management (e.g. J&T, LBC with custom fees)
+- Seller inbox with chat replies to customers
+- Customer moderation tools:
+  - warning / temporary restriction / permanent ban
+  - restriction lift
+  - account deletion
 - Refund queue management (approve/reject)
 - Reports screen with filters:
   - today, yesterday, week, month, year, 3 months, 6 months, custom date range

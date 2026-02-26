@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AddressPinMap } from '../../components/AddressPinMap';
 import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { CheckoutProcessingOverlay } from '../../components/CheckoutProcessingOverlay';
 import { EmptyState } from '../../components/EmptyState';
 import { SearchableDropdown } from '../../components/SearchableDropdown';
 import { useAddressLocations } from '../../hooks/useAddressLocations';
@@ -15,10 +17,11 @@ import { useTheme } from '../../providers/ThemeProvider';
 import {
   buildAddressQuery,
   computeDeliveryFeeByDistance,
+  fetchDrivingRoute,
   geocodeAddress,
   getDeliveryRatePerKm,
   getStoreCoordinates,
-  haversineDistanceKm,
+  reverseGeocodePoint,
 } from '../../services/geocodingService';
 import {
   createCodOrder,
@@ -27,9 +30,13 @@ import {
   saveCustomerAddress,
   setDefaultAddress,
 } from '../../services/productService';
+import { fetchActiveCustomerRestriction } from '../../services/chatModerationService';
+import { fetchDeliveryRatePerKmSetting } from '../../services/settingsService';
 import { useCartStore } from '../../store/cartStore';
-import { CustomerAddress, ShippingMethod } from '../../types/models';
+import { CustomerAddress, CustomerRestriction, ShippingMethod } from '../../types/models';
+import { wait } from '../../utils/async';
 import { formatPHP } from '../../utils/currency';
+import { getProductBasePrice } from '../../utils/pricing';
 
 const DEFAULT_ADDRESS_FORM = {
   countryRegion: 'Philippines',
@@ -42,17 +49,26 @@ const DEFAULT_ADDRESS_FORM = {
   postalCode: '',
   line1: '',
   line2: '',
+  latitude: null as number | null,
+  longitude: null as number | null,
 };
+
+type CheckoutRoute = RouteProp<CustomerStackParamList, 'Checkout'>;
+
+function getCartItemKey(productId: string, variantId?: string) {
+  return `${productId}::${variantId ?? 'default'}`;
+}
 
 export function CheckoutScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<CustomerStackParamList>>();
+  const route = useRoute<CheckoutRoute>();
   const { theme } = useTheme();
   const { role, profile } = useAuth();
   const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const items = useCartStore((state) => state.items);
-  const subtotal = useCartStore((state) => state.subtotal());
   const clearCart = useCartStore((state) => state.clearCart);
+  const removeItem = useCartStore((state) => state.removeItem);
   const [placing, setPlacing] = useState(false);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [shippingMethods, setShippingMethods] = useState<ShippingMethod[]>([]);
@@ -64,7 +80,11 @@ export function CheckoutScreen() {
   const [distanceKm, setDistanceKm] = useState<number | null>(null);
   const [distanceDeliveryFee, setDistanceDeliveryFee] = useState<number | null>(null);
   const [feeEstimateFailed, setFeeEstimateFailed] = useState(false);
+  const [autoFillFromPinBusy, setAutoFillFromPinBusy] = useState(false);
+  const [lastAutoFillPinKey, setLastAutoFillPinKey] = useState('');
   const [addressForm, setAddressForm] = useState(DEFAULT_ADDRESS_FORM);
+  const [deliveryRatePerKm, setDeliveryRatePerKm] = useState(getDeliveryRatePerKm());
+  const [activeRestriction, setActiveRestriction] = useState<CustomerRestriction | null>(null);
   const { provinceOptions, cityOptions, barangayOptions, loadingLocations, isUsingFallback } = useAddressLocations(
     addressForm.province,
     addressForm.city,
@@ -74,14 +94,33 @@ export function CheckoutScreen() {
     () => shippingMethods.find((item) => item.id === selectedShippingMethodId) ?? null,
     [shippingMethods, selectedShippingMethodId],
   );
+  const selectedKeys = route.params?.selectedKeys ?? [];
+  const checkoutItems = useMemo(
+    () =>
+      selectedKeys.length
+        ? items.filter((item) => selectedKeys.includes(getCartItemKey(item.product.id, item.variantId)))
+        : items,
+    [items, selectedKeys],
+  );
+  const checkoutSubtotal = useMemo(
+    () => checkoutItems.reduce((sum, item) => sum + (item.unitPrice ?? getProductBasePrice(item.product)) * item.quantity, 0),
+    [checkoutItems],
+  );
   const selectedAddress = useMemo(
     () => addresses.find((item) => item.id === selectedAddressId) ?? null,
     [addresses, selectedAddressId],
   );
-  const perKmRate = getDeliveryRatePerKm();
+  const pinValue = useMemo(
+    () =>
+      Number.isFinite(addressForm.latitude) && Number.isFinite(addressForm.longitude)
+        ? { latitude: Number(addressForm.latitude), longitude: Number(addressForm.longitude) }
+        : null,
+    [addressForm.latitude, addressForm.longitude],
+  );
+  const perKmRate = deliveryRatePerKm;
   const baseDeliveryFee = selectedShipping?.baseFee ?? 0;
   const deliveryFee = distanceDeliveryFee ?? baseDeliveryFee;
-  const total = subtotal + (items.length ? deliveryFee : 0);
+  const total = checkoutSubtotal + (checkoutItems.length ? deliveryFee : 0);
 
   // Filter shipping methods: Only show "Suki Send Rider" (or fall back to all if it doesn't exist)
   const displayedShippingMethods = useMemo(() => {
@@ -97,12 +136,16 @@ export function CheckoutScreen() {
     }
 
     try {
-      const [nextAddresses, nextShipping] = await Promise.all([
+      const [nextAddresses, nextShipping, nextRate] = await Promise.all([
         fetchCustomerAddresses(profile.id),
         fetchShippingMethods(),
+        fetchDeliveryRatePerKmSetting(),
       ]);
+      const restriction = await fetchActiveCustomerRestriction(profile.id);
       setAddresses(nextAddresses);
       setShippingMethods(nextShipping);
+      setDeliveryRatePerKm(nextRate);
+      setActiveRestriction(restriction);
       setSelectedAddressId(nextAddresses.find((item) => item.isDefault)?.id ?? nextAddresses[0]?.id ?? null);
 
       // Auto-select Suki Send Rider if available
@@ -115,6 +158,7 @@ export function CheckoutScreen() {
       setShippingMethods([]);
       setSelectedAddressId(null);
       setSelectedShippingMethodId(null);
+      setActiveRestriction(null);
     }
   };
 
@@ -147,7 +191,10 @@ export function CheckoutScreen() {
     (async () => {
       setIsEstimatingFee(true);
       setFeeEstimateFailed(false);
-      const customerPoint = await geocodeAddress(geocodeTarget);
+      const hasPinnedCoordinates = Number.isFinite(selectedAddress.latitude) && Number.isFinite(selectedAddress.longitude);
+      const customerPoint = hasPinnedCoordinates
+        ? { latitude: Number(selectedAddress.latitude), longitude: Number(selectedAddress.longitude) }
+        : await geocodeAddress(geocodeTarget);
       if (!mounted) {
         return;
       }
@@ -161,8 +208,21 @@ export function CheckoutScreen() {
       }
 
       const storePoint = getStoreCoordinates();
-      const km = haversineDistanceKm(storePoint, customerPoint);
-      setDistanceKm(Number(km.toFixed(2)));
+      const route = await fetchDrivingRoute(storePoint, customerPoint);
+      if (!mounted) {
+        return;
+      }
+
+      if (!route) {
+        setDistanceKm(null);
+        setDistanceDeliveryFee(null);
+        setFeeEstimateFailed(true);
+        setIsEstimatingFee(false);
+        return;
+      }
+
+      const km = Number(route.distanceKm.toFixed(2));
+      setDistanceKm(km);
       setDistanceDeliveryFee(computeDeliveryFeeByDistance(km, perKmRate));
       setFeeEstimateFailed(false);
       setIsEstimatingFee(false);
@@ -172,6 +232,48 @@ export function CheckoutScreen() {
       mounted = false;
     };
   }, [perKmRate, selectedAddress]);
+
+  useEffect(() => {
+    if (!pinValue) {
+      return;
+    }
+
+    const pinKey = `${pinValue.latitude.toFixed(5)},${pinValue.longitude.toFixed(5)}`;
+    if (pinKey === lastAutoFillPinKey) {
+      return;
+    }
+
+    let active = true;
+    const timer = setTimeout(async () => {
+      try {
+        setAutoFillFromPinBusy(true);
+        const reversed = await reverseGeocodePoint(pinValue);
+        if (!active || !reversed) {
+          return;
+        }
+
+        setAddressForm((prev) => ({
+          ...prev,
+          countryRegion: reversed.countryRegion ?? prev.countryRegion,
+          province: reversed.province ?? prev.province,
+          city: reversed.city ?? prev.city,
+          barangay: reversed.barangay ?? prev.barangay,
+          postalCode: reversed.postalCode ?? prev.postalCode,
+          line1: reversed.line1 ?? reversed.displayName?.split(',')[0] ?? prev.line1,
+        }));
+        setLastAutoFillPinKey(pinKey);
+      } finally {
+        if (active) {
+          setAutoFillFromPinBusy(false);
+        }
+      }
+    }, 850);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [lastAutoFillPinKey, pinValue]);
 
   const saveAddress = async () => {
     if (!profile?.id) {
@@ -211,6 +313,8 @@ export function CheckoutScreen() {
         postalCode: addressForm.postalCode.trim(),
         line1: addressForm.line1.trim(),
         line2: addressForm.line2.trim() || undefined,
+        latitude: Number.isFinite(addressForm.latitude) ? Number(addressForm.latitude) : undefined,
+        longitude: Number.isFinite(addressForm.longitude) ? Number(addressForm.longitude) : undefined,
       });
       setAddressForm(DEFAULT_ADDRESS_FORM);
       await loadCheckoutData();
@@ -231,10 +335,10 @@ export function CheckoutScreen() {
     }
   };
 
-  if (!items.length) {
+  if (!checkoutItems.length) {
     return (
       <View style={[styles.emptyWrap, { backgroundColor: theme.colors.background }]}>
-        <EmptyState title="No items for checkout" subtitle="Go back and add products to your cart first." />
+        <EmptyState title="No selected items for checkout" subtitle="Go back to cart and select products first." />
         <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
       </View>
     );
@@ -270,18 +374,36 @@ export function CheckoutScreen() {
       return;
     }
 
+    if (activeRestriction && ['restricted', 'banned'].includes(activeRestriction.severity)) {
+      showAlert({
+        title: 'Order blocked',
+        message: activeRestriction.endsAt
+          ? `Your account is restricted until ${new Date(activeRestriction.endsAt).toLocaleString()}. ${activeRestriction.reason}`
+          : `Your account is restricted. ${activeRestriction.reason}`,
+        tone: 'error',
+      });
+      return;
+    }
+
     setPlacing(true);
     try {
-      const orderNo = await createCodOrder({
-        customerId: profile.id,
-        addressId: selectedAddressId,
-        shippingMethodId: selectedShippingMethodId,
-        items,
-        customerNote: customerNote.trim() || undefined,
-        deliveryFee,
-      });
+      const [orderNo] = await Promise.all([
+        createCodOrder({
+          customerId: profile.id,
+          addressId: selectedAddressId,
+          shippingMethodId: selectedShippingMethodId,
+          items: checkoutItems,
+          customerNote: customerNote.trim() || undefined,
+          deliveryFee,
+        }),
+        wait(6000),
+      ]);
 
-      clearCart();
+      if (selectedKeys.length) {
+        checkoutItems.forEach((item) => removeItem(item.product.id, item.variantId));
+      } else {
+        clearCart();
+      }
       showAlert({
         title: 'Order placed successfully',
         message: `Your COD reference number is ${orderNo}.`,
@@ -314,6 +436,15 @@ export function CheckoutScreen() {
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
     >
       <Text style={[styles.title, { color: theme.colors.text }]}>COD Checkout</Text>
+      {activeRestriction && ['restricted', 'banned'].includes(activeRestriction.severity) ? (
+        <View style={[styles.noticeCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.warning ?? '#F59E0B' }]}>
+          <Text style={[styles.noticeTitle, { color: theme.colors.warning ?? '#F59E0B' }]}>Account restriction active</Text>
+          <Text style={[styles.noticeText, { color: theme.colors.textMuted }]}>
+            {activeRestriction.reason}
+            {activeRestriction.endsAt ? ` Until ${new Date(activeRestriction.endsAt).toLocaleString()}.` : ' Permanent restriction.'}
+          </Text>
+        </View>
+      ) : null}
 
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
         <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Shipping Address</Text>
@@ -362,22 +493,113 @@ export function CheckoutScreen() {
 
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
         <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Add Address</Text>
-        <View style={styles.row}>
-          <TextInput
-            value={addressForm.firstName}
-            onChangeText={(value) => setAddressForm((prev) => ({ ...prev, firstName: value }))}
-            placeholder="First name"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
-          <TextInput
-            value={addressForm.lastName}
-            onChangeText={(value) => setAddressForm((prev) => ({ ...prev, lastName: value }))}
-            placeholder="Last name"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
+        <Text style={[styles.label, { color: theme.colors.textMuted }]}>Pin Delivery Location</Text>
+        <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
+          Tap the map or drag the pin for a more accurate delivery location.
+        </Text>
+        <AddressPinMap
+          value={pinValue}
+          onChange={(next) =>
+            setAddressForm((prev) => ({
+              ...prev,
+              latitude: Number(next.latitude.toFixed(7)),
+              longitude: Number(next.longitude.toFixed(7)),
+            }))
+          }
+        />
+        <View style={styles.pinMetaRow}>
+          <Text style={[styles.pinMeta, { color: theme.colors.textMuted }]}>
+            {pinValue
+              ? `Pinned: ${pinValue.latitude.toFixed(5)}, ${pinValue.longitude.toFixed(5)}`
+              : 'No pin selected yet'}
+          </Text>
+          <Pressable
+            style={[styles.pinFillButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+            onPress={async () => {
+              if (!pinValue) {
+                showAlert({
+                  title: 'Pin location first',
+                  message: 'Select your location on the map before auto-filling address fields.',
+                  tone: 'info',
+                });
+                return;
+              }
+
+              try {
+                const reversed = await reverseGeocodePoint(pinValue);
+                if (!reversed) {
+                  showAlert({
+                    title: 'Address lookup unavailable',
+                    message: 'We could not auto-fill this location. You can still enter fields manually.',
+                    tone: 'info',
+                  });
+                  return;
+                }
+
+                setAddressForm((prev) => ({
+                  ...prev,
+                  countryRegion: reversed.countryRegion ?? prev.countryRegion,
+                  province: reversed.province ?? prev.province,
+                  city: reversed.city ?? prev.city,
+                  barangay: reversed.barangay ?? prev.barangay,
+                  postalCode: reversed.postalCode ?? prev.postalCode,
+                  line1: reversed.line1 ?? reversed.displayName?.split(',')[0] ?? prev.line1,
+                }));
+                showAlert({
+                  title: 'Address fields updated',
+                  message: 'We auto-filled available details from your pinned location.',
+                  tone: 'success',
+                });
+              } catch (error) {
+                showAlert({
+                  title: 'Auto-fill failed',
+                  message: error instanceof Error ? error.message : 'Unable to fetch address details.',
+                  tone: 'error',
+                });
+              }
+            }}
+          >
+            <Text style={[styles.pinFillButtonText, { color: theme.colors.text }]}>Auto-fill from pin</Text>
+          </Pressable>
         </View>
+        {autoFillFromPinBusy ? (
+          <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
+            Detecting address details from your pinned location...
+          </Text>
+        ) : null}
+
+        <Text style={[styles.label, { color: theme.colors.textMuted }]}>Country / Region</Text>
+        <TextInput
+          value={addressForm.countryRegion}
+          onChangeText={(value) => setAddressForm((prev) => ({ ...prev, countryRegion: value }))}
+          placeholder="Country / Region"
+          placeholderTextColor={theme.colors.textMuted}
+          style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+        />
+
+        <View style={styles.row}>
+          <View style={styles.half}>
+            <Text style={[styles.label, { color: theme.colors.textMuted }]}>First Name</Text>
+            <TextInput
+              value={addressForm.firstName}
+              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, firstName: value }))}
+              placeholder="First name"
+              placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+            />
+          </View>
+          <View style={styles.half}>
+            <Text style={[styles.label, { color: theme.colors.textMuted }]}>Last Name</Text>
+            <TextInput
+              value={addressForm.lastName}
+              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, lastName: value }))}
+              placeholder="Last name"
+              placeholderTextColor={theme.colors.textMuted}
+              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+            />
+          </View>
+        </View>
+        <Text style={[styles.label, { color: theme.colors.textMuted }]}>Phone Number</Text>
         <TextInput
           value={addressForm.phone}
           onChangeText={(value) => setAddressForm((prev) => ({ ...prev, phone: value.startsWith('+63') ? value : `+63${value.replace(/^[+]?63/, '')}` }))}
@@ -433,6 +655,7 @@ export function CheckoutScreen() {
           onSelect={(value) => setAddressForm((prev) => ({ ...prev, barangay: value }))}
         />
 
+        <Text style={[styles.label, { color: theme.colors.textMuted }]}>Postal Code</Text>
         <TextInput
           value={addressForm.postalCode}
           onChangeText={(value) => setAddressForm((prev) => ({ ...prev, postalCode: value }))}
@@ -440,6 +663,7 @@ export function CheckoutScreen() {
           placeholderTextColor={theme.colors.textMuted}
           style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
         />
+        <Text style={[styles.label, { color: theme.colors.textMuted }]}>Complete Address</Text>
         <TextInput
           value={addressForm.line1}
           onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line1: value }))}
@@ -447,6 +671,7 @@ export function CheckoutScreen() {
           placeholderTextColor={theme.colors.textMuted}
           style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
         />
+        <Text style={[styles.label, { color: theme.colors.textMuted }]}>Landmark (Optional)</Text>
         <TextInput
           value={addressForm.line2}
           onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line2: value }))}
@@ -525,21 +750,21 @@ export function CheckoutScreen() {
 
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
         <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Order Summary</Text>
-        {items.map((item) => (
+        {checkoutItems.map((item) => (
           <View key={`${item.product.id}-${item.variantId ?? 'default'}`} style={styles.summaryRow}>
             <Text style={[styles.summaryLabel, { color: theme.colors.textMuted }]}>
               {item.product.name}
               {item.variantLabel ? ` (${item.variantLabel})` : ''} x{item.quantity}
             </Text>
             <Text style={[styles.summaryValue, { color: theme.colors.text }]}>
-              {formatPHP((item.unitPrice ?? item.product.price) * item.quantity)}
+              {formatPHP((item.unitPrice ?? getProductBasePrice(item.product)) * item.quantity)}
             </Text>
           </View>
         ))}
 
         <View style={[styles.summaryRow, styles.divider]}>
           <Text style={[styles.summaryLabel, { color: theme.colors.textMuted }]}>Subtotal</Text>
-          <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{formatPHP(subtotal)}</Text>
+          <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{formatPHP(checkoutSubtotal)}</Text>
         </View>
         <View style={styles.summaryRow}>
           <Text style={[styles.summaryLabel, { color: theme.colors.textMuted }]}>Delivery Fee</Text>
@@ -562,6 +787,7 @@ export function CheckoutScreen() {
       </Pressable>
 
       <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
+      <CheckoutProcessingOverlay visible={placing} />
     </ScrollView>
   );
 }
@@ -595,6 +821,23 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 22,
     fontWeight: '900',
+  },
+  noticeCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  noticeTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  noticeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 18,
+    marginTop: 4,
   },
   card: {
     borderRadius: 14,
@@ -630,6 +873,27 @@ const styles = StyleSheet.create({
   optionSub: {
     fontSize: 12,
     marginTop: 4,
+  },
+  pinMetaRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'space-between',
+  },
+  pinMeta: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  pinFillButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  pinFillButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   row: {
     flexDirection: 'row',

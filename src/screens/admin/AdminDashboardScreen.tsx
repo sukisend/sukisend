@@ -1,14 +1,16 @@
 import dayjs from 'dayjs';
-import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { DateRangePicker } from '../../components/DateRangePicker';
+import { BrandedLoader } from '../../components/BrandedLoader';
 import { EmptyState } from '../../components/EmptyState';
 import { LogoHeader } from '../../components/LogoHeader';
 import { MetricCard } from '../../components/MetricCard';
 import { RangeChips } from '../../components/RangeChips';
 import { SectionHeader } from '../../components/SectionHeader';
+import { useMinimumLoader } from '../../hooks/useMinimumLoader';
 import { useTheme } from '../../providers/ThemeProvider';
 import { fetchDashboardSnapshot } from '../../services/adminService';
 import { DashboardSnapshot, DateRange, SalesRangePreset } from '../../types/models';
@@ -20,12 +22,12 @@ const DEFAULT_CUSTOM_RANGE = {
 };
 
 export function AdminDashboardScreen() {
-  const tabBarHeight = useBottomTabBarHeight();
   const { theme } = useTheme();
   const [rangePreset, setRangePreset] = useState<SalesRangePreset>('today');
   const [customRange, setCustomRange] = useState(DEFAULT_CUSTOM_RANGE);
   const [loading, setLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const showLoader = useMinimumLoader(loading, 6000);
 
   const customRangeIso: DateRange = useMemo(
     () => ({
@@ -54,7 +56,7 @@ export function AdminDashboardScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
-      contentContainerStyle={[styles.content, { paddingBottom: tabBarHeight + 22 }]}
+      contentContainerStyle={[styles.content, { paddingBottom: 8 }]}
     >
       <LogoHeader />
       <SectionHeader title="Admin Dashboard" subtitle="Inventory, sales, and COD performance in one view." />
@@ -65,7 +67,7 @@ export function AdminDashboardScreen() {
         <DateRangePicker startDate={customRange.start} endDate={customRange.end} onChange={setCustomRange} />
       ) : null}
 
-      {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading dashboard...</Text> : null}
+      {showLoader ? <BrandedLoader compact label="Loading dashboard..." /> : null}
 
       {snapshot ? (
         <>
@@ -82,11 +84,21 @@ export function AdminDashboardScreen() {
             <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Top Selling Products</Text>
             {snapshot.topProducts.length ? (
               snapshot.topProducts.map((item) => (
-                <View key={item.productId} style={styles.listRow}>
-                  <Text style={[styles.listLabel, { color: theme.colors.text }]}>{item.name}</Text>
-                  <Text style={[styles.listValue, { color: theme.colors.primary }]}>
-                    {item.qty} sold | {formatPHP(item.sales)}
-                  </Text>
+                <View key={item.productId} style={styles.topProductRow}>
+                  {item.imageUrl ? (
+                    <Image source={{ uri: item.imageUrl }} style={styles.topProductImage} />
+                  ) : (
+                    <View style={[styles.topProductFallback, { backgroundColor: theme.colors.surfaceAlt }]}>
+                      <Ionicons name="cube-outline" size={16} color={theme.colors.textMuted} />
+                    </View>
+                  )}
+                  <View style={styles.topProductInfo}>
+                    <Text style={[styles.listLabel, { color: theme.colors.text }]} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <Text style={[styles.topProductMeta, { color: theme.colors.textMuted }]}>{item.qty} sold</Text>
+                  </View>
+                  <Text style={[styles.listValue, { color: theme.colors.primary }]}>{formatPHP(item.sales)}</Text>
                 </View>
               ))
             ) : (
@@ -170,6 +182,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
+  },
+  topProductRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  topProductImage: {
+    borderRadius: 8,
+    height: 42,
+    width: 42,
+  },
+  topProductFallback: {
+    alignItems: 'center',
+    borderRadius: 8,
+    height: 42,
+    justifyContent: 'center',
+    width: 42,
+  },
+  topProductInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  topProductMeta: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
   },
   listLabel: {
     flex: 1,

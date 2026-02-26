@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import { CartItem, Product } from '../types/models';
+import { getProductBasePrice } from '../utils/pricing';
 
 interface CartState {
   items: CartItem[];
@@ -74,5 +75,5 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
   clearCart: () => set({ items: [] }),
   itemCount: () => get().items.reduce((sum, item) => sum + item.quantity, 0),
-  subtotal: () => get().items.reduce((sum, item) => sum + (item.unitPrice ?? item.product.price) * item.quantity, 0),
+  subtotal: () => get().items.reduce((sum, item) => sum + (item.unitPrice ?? getProductBasePrice(item.product)) * item.quantity, 0),
 }));
