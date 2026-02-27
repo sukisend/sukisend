@@ -1,7 +1,7 @@
-﻿import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Location from 'expo-location';
 
 import { DateRangePicker } from '../../components/DateRangePicker';
@@ -18,10 +18,11 @@ import {
   saveShippingMethod,
   updateOrderStatus,
 } from '../../services/adminService';
-import { fetchDeliveryRatePerKmSetting, saveDeliveryRatePerKmSetting } from '../../services/settingsService';
 import { DateRange, Order, OrderStatus, SalesRangePreset, ShippingMethod } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
 import { formatDateTime } from '../../utils/date';
+
+const STATUS_PAGE_SIZE = 6;
 
 const NEXT_ACTIONS: Partial<Record<OrderStatus, OrderStatus[]>> = {
   pending: ['approved', 'cancelled'],
@@ -47,6 +48,8 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
   cancelled: 'Cancelled',
 };
 
+const LOCATION_STATUS_SET = new Set<OrderStatus>(['shipped', 'out_for_delivery', 'delivered']);
+
 function normalizeOrderStatus(status: OrderStatus): OrderStatus {
   if (status === 'confirmed' || status === 'preparing' || status === 'packed') {
     return 'approved';
@@ -65,6 +68,32 @@ const STATUS_SECTIONS: Array<{ status: OrderStatus; title: string; icon: keyof t
   { status: 'cancelled', title: 'Cancelled', icon: 'close-circle-outline' },
   { status: 'refund_requested', title: 'Refund Requested', icon: 'alert-circle-outline' },
   { status: 'refunded', title: 'Refunded', icon: 'return-down-back-outline' },
+];
+
+const STATUS_GROUPS: Array<{
+  key: string;
+  title: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  statuses: OrderStatus[];
+}> = [
+  {
+    key: 'active',
+    title: 'Active Orders',
+    icon: 'time-outline',
+    statuses: ['pending', 'approved', 'shipped', 'out_for_delivery'],
+  },
+  {
+    key: 'completed',
+    title: 'Completed',
+    icon: 'checkmark-circle-outline',
+    statuses: ['delivered', 'completed'],
+  },
+  {
+    key: 'issues',
+    title: 'Issues',
+    icon: 'warning-outline',
+    statuses: ['cancelled', 'refund_requested', 'refunded'],
+  },
 ];
 
 interface ShippingForm {
@@ -94,15 +123,15 @@ export function AdminTransactionsScreen() {
   const [refunds, setRefunds] = useState<any[]>([]);
   const [shippingMethods, setShippingMethods] = useState<ShippingMethod[]>([]);
   const [shippingForm, setShippingForm] = useState<ShippingForm>(EMPTY_SHIPPING_FORM);
-  const [deliveryRateInput, setDeliveryRateInput] = useState('20');
-  const [deliveryRateMessage, setDeliveryRateMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [savingShipping, setSavingShipping] = useState(false);
-  const [savingDeliveryRate, setSavingDeliveryRate] = useState(false);
-  const [expandedSection, setExpandedSection] = useState<OrderStatus | null>('pending');
+  const [shippingExpanded, setShippingExpanded] = useState(false);
   const [statusNotes, setStatusNotes] = useState<Record<string, string>>({});
+  const [activeStatus, setActiveStatus] = useState<OrderStatus | null>(null);
+  const [statusPage, setStatusPage] = useState(1);
   const [liveTrackingOrderId, setLiveTrackingOrderId] = useState<string | null>(null);
   const liveTrackingSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const liveTrackingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const rangeIso: DateRange = useMemo(
     () => ({
@@ -136,25 +165,57 @@ export function AdminTransactionsScreen() {
     return grouped;
   }, [transactions]);
 
+  const activeStatusOrders = useMemo(() => {
+    if (!activeStatus) {
+      return [];
+    }
+    return ordersByStatus[activeStatus] ?? [];
+  }, [activeStatus, ordersByStatus]);
+
+  const statusPageCount = useMemo(
+    () => Math.max(1, Math.ceil(activeStatusOrders.length / STATUS_PAGE_SIZE)),
+    [activeStatusOrders.length],
+  );
+
+  const statusPageOrders = useMemo(() => {
+    const start = (statusPage - 1) * STATUS_PAGE_SIZE;
+    return activeStatusOrders.slice(start, start + STATUS_PAGE_SIZE);
+  }, [activeStatusOrders, statusPage]);
+
+  const statusSectionMap = useMemo(() => {
+    const map = new Map<OrderStatus, { title: string; icon: keyof typeof Ionicons.glyphMap }>();
+    for (const section of STATUS_SECTIONS) {
+      map.set(section.status, { title: section.title, icon: section.icon });
+    }
+    return map;
+  }, []);
+
+  useEffect(() => {
+    if (!activeStatus) {
+      setStatusPage(1);
+      return;
+    }
+
+    if (statusPage > statusPageCount) {
+      setStatusPage(statusPageCount);
+    }
+  }, [activeStatus, statusPage, statusPageCount]);
+
   const loadTransactions = async () => {
     setLoading(true);
     try {
-      const [rows, shipping, openRefunds, deliveryRate] = await Promise.all([
+      const [rows, shipping, openRefunds] = await Promise.all([
         fetchRecentTransactions(80, rangePreset, rangePreset === 'custom' ? rangeIso : undefined),
         fetchShippingMethodsAdmin(),
         fetchOpenRefundRequests(),
-        fetchDeliveryRatePerKmSetting(),
       ]);
       setTransactions(rows);
       setShippingMethods(shipping);
       setRefunds(openRefunds);
-      setDeliveryRateInput(String(deliveryRate));
-      setDeliveryRateMessage('');
     } catch {
       setTransactions([]);
       setShippingMethods([]);
       setRefunds([]);
-      setDeliveryRateMessage('');
     } finally {
       setLoading(false);
     }
@@ -166,8 +227,18 @@ export function AdminTransactionsScreen() {
 
   useEffect(() => {
     return () => {
-      liveTrackingSubscriptionRef.current?.remove();
-      liveTrackingSubscriptionRef.current = null;
+      if (liveTrackingIntervalRef.current) {
+        clearInterval(liveTrackingIntervalRef.current);
+        liveTrackingIntervalRef.current = null;
+      }
+      if (liveTrackingSubscriptionRef.current) {
+        try {
+          liveTrackingSubscriptionRef.current.remove();
+        } catch {
+          // Expo web can throw from remove() in some environments.
+        }
+        liveTrackingSubscriptionRef.current = null;
+      }
     };
   }, []);
 
@@ -191,22 +262,40 @@ export function AdminTransactionsScreen() {
     const note = (statusNotes[order.id] ?? '').trim() || `Order is now ${STATUS_LABEL[nextStatus].toLowerCase()}.`;
 
     try {
-      const nextNormalized = normalizeOrderStatus(nextStatus);
-      const coords =
-        nextNormalized === 'shipped' || nextNormalized === 'out_for_delivery' || nextNormalized === 'delivered'
-          ? await getCurrentCoordinates()
-          : null;
+      // Respect SQL transition rules while preserving the compact UI actions.
+      const transitionSteps: OrderStatus[] =
+        ['approved', 'confirmed', 'preparing'].includes(order.status) && (nextStatus === 'shipped' || nextStatus === 'out_for_delivery')
+          ? ['packed', nextStatus]
+          : [nextStatus];
 
-      await updateOrderStatus(order.id, nextStatus, note || undefined, coords?.latitude, coords?.longitude);
+      for (let index = 0; index < transitionSteps.length; index += 1) {
+        const step = transitionSteps[index];
+        const isFinalStep = index === transitionSteps.length - 1;
+        const stepNote = isFinalStep ? note : `Auto-progress: ${STATUS_LABEL[step]}.`;
+        const coords = LOCATION_STATUS_SET.has(step) ? await getCurrentCoordinates() : null;
+
+        await updateOrderStatus(order.id, step, stepNote || undefined, coords?.latitude, coords?.longitude);
+      }
+
       setStatusNotes((prev) => ({ ...prev, [order.id]: '' }));
       await loadTransactions();
-    } catch {
-      // keep current UI state
+    } catch (error) {
+      console.warn('Failed to update order status', error);
     }
   };
 
   const stopLiveTracking = () => {
-    liveTrackingSubscriptionRef.current?.remove();
+    if (liveTrackingIntervalRef.current) {
+      clearInterval(liveTrackingIntervalRef.current);
+      liveTrackingIntervalRef.current = null;
+    }
+    if (liveTrackingSubscriptionRef.current) {
+      try {
+        liveTrackingSubscriptionRef.current.remove();
+      } catch {
+        // Expo web can throw from remove() in some environments.
+      }
+    }
     liveTrackingSubscriptionRef.current = null;
     setLiveTrackingOrderId(null);
   };
@@ -218,12 +307,34 @@ export function AdminTransactionsScreen() {
     }
 
     stopLiveTracking();
+
+    const pushLiveLocation = async () => {
+      const coords = await getCurrentCoordinates();
+      if (!coords) {
+        return;
+      }
+      try {
+        // Keep current exact status; this posts a location ping without forcing an invalid transition.
+        await updateOrderStatus(order.id, order.status, 'Live rider location update', coords.latitude, coords.longitude);
+      } catch {
+        // Keep live tracking active even when single update fails.
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      await pushLiveLocation();
+      liveTrackingIntervalRef.current = setInterval(() => {
+        void pushLiveLocation();
+      }, 6000);
+      setLiveTrackingOrderId(order.id);
+      return;
+    }
+
     const permission = await Location.requestForegroundPermissionsAsync();
     if (!permission.granted) {
       return;
     }
 
-    const normalizedStatus = normalizeOrderStatus(order.status);
     const subscription = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.Balanced,
@@ -234,13 +345,7 @@ export function AdminTransactionsScreen() {
         const lat = Number(position.coords.latitude.toFixed(7));
         const lng = Number(position.coords.longitude.toFixed(7));
         try {
-          await updateOrderStatus(
-            order.id,
-            normalizedStatus,
-            'Live rider location update',
-            lat,
-            lng,
-          );
+          await updateOrderStatus(order.id, order.status, 'Live rider location update', lat, lng);
         } catch {
           // Keep live tracking active even when single update fails.
         }
@@ -274,29 +379,6 @@ export function AdminTransactionsScreen() {
     }
   };
 
-  const submitDeliveryRate = async () => {
-    const rate = Number(deliveryRateInput);
-    if (!Number.isFinite(rate) || rate <= 0) {
-      setDeliveryRateMessage('Rate must be greater than zero.');
-      return;
-    }
-
-    setSavingDeliveryRate(true);
-    try {
-      await saveDeliveryRatePerKmSetting(rate);
-      setDeliveryRateMessage(`Saved ${formatPHP(rate)}/km`);
-      await loadTransactions();
-    } catch (error) {
-      setDeliveryRateMessage(error instanceof Error ? error.message : 'Unable to save delivery rate.');
-    } finally {
-      setSavingDeliveryRate(false);
-    }
-  };
-
-  const toggleSection = (section: OrderStatus) => {
-    setExpandedSection((prev) => (prev === section ? null : section));
-  };
-
   const getSectionColor = (status: OrderStatus) => {
     switch (status) {
       case 'pending':
@@ -317,20 +399,117 @@ export function AdminTransactionsScreen() {
     }
   };
 
+  const getOrderPalette = (status: OrderStatus) => {
+    switch (status) {
+      case 'pending':
+        return {
+          bg: theme.isDark ? 'rgba(251, 146, 60, 0.16)' : 'rgba(249, 115, 22, 0.12)',
+          border: '#F97316',
+          badgeBg: '#F97316',
+          badgeText: '#FFFFFF',
+          amountColor: '#FB923C',
+        };
+      case 'approved':
+      case 'shipped':
+      case 'out_for_delivery':
+        return {
+          bg: theme.isDark ? 'rgba(59, 130, 246, 0.16)' : 'rgba(37, 99, 235, 0.1)',
+          border: '#3B82F6',
+          badgeBg: '#3B82F6',
+          badgeText: '#FFFFFF',
+          amountColor: '#60A5FA',
+        };
+      case 'delivered':
+      case 'completed':
+        return {
+          bg: theme.isDark ? 'rgba(34, 197, 94, 0.16)' : 'rgba(22, 163, 74, 0.11)',
+          border: '#22C55E',
+          badgeBg: '#22C55E',
+          badgeText: '#062E16',
+          amountColor: '#4ADE80',
+        };
+      case 'cancelled':
+        return {
+          bg: theme.isDark ? 'rgba(248, 113, 113, 0.15)' : 'rgba(239, 68, 68, 0.1)',
+          border: '#EF4444',
+          badgeBg: '#EF4444',
+          badgeText: '#FFFFFF',
+          amountColor: '#F87171',
+        };
+      case 'refund_requested':
+      case 'refunded':
+        return {
+          bg: theme.isDark ? 'rgba(250, 204, 21, 0.14)' : 'rgba(245, 158, 11, 0.11)',
+          border: '#F59E0B',
+          badgeBg: '#F59E0B',
+          badgeText: '#111827',
+          amountColor: '#FBBF24',
+        };
+      default:
+        return {
+          bg: theme.colors.surface,
+          border: theme.colors.border,
+          badgeBg: theme.colors.surfaceAlt,
+          badgeText: theme.colors.text,
+          amountColor: theme.colors.primary,
+        };
+    }
+  };
+
+  const getActionPalette = (status: OrderStatus) => {
+    if (status === 'approved' || status === 'completed' || status === 'delivered') {
+      return {
+        bg: '#22C55E',
+        border: '#22C55E',
+        text: '#052E16',
+      };
+    }
+
+    if (status === 'cancelled') {
+      return {
+        bg: '#EF4444',
+        border: '#EF4444',
+        text: '#FFFFFF',
+      };
+    }
+
+    if (status === 'refunded') {
+      return {
+        bg: '#F59E0B',
+        border: '#F59E0B',
+        text: '#111827',
+      };
+    }
+
+    return {
+      bg: theme.colors.surface,
+      border: theme.colors.border,
+      text: theme.colors.text,
+    };
+  };
+
+  const openStatusPage = (status: OrderStatus) => {
+    setActiveStatus(status);
+    setStatusPage(1);
+  };
+
   const renderCompactOrder = (order: Order) => {
     const displayStatus = normalizeOrderStatus(order.status);
     const actions = NEXT_ACTIONS[displayStatus] ?? [];
+    const palette = getOrderPalette(displayStatus);
 
     return (
-      <View key={order.id} style={[styles.orderRow, { borderColor: theme.colors.border }]}>
+      <View key={order.id} style={[styles.orderRow, { borderColor: palette.border, backgroundColor: palette.bg }]}>
         <View style={styles.orderHead}>
           <Text style={[styles.orderNo, { color: theme.colors.text }]}>{order.orderNo}</Text>
-          <Text style={[styles.statusBadge, { color: theme.colors.primary }]}>{STATUS_LABEL[displayStatus]}</Text>
+          <Text style={[styles.statusBadge, { backgroundColor: palette.badgeBg, color: palette.badgeText }]}>
+            {STATUS_LABEL[displayStatus]}
+          </Text>
         </View>
 
         <View style={styles.orderMeta}>
           <Text style={[styles.meta, { color: theme.colors.textMuted }]}>{formatDateTime(order.createdAt)}</Text>
-          <Text style={[styles.orderTotal, { color: theme.colors.primary }]}>{formatPHP(order.total)}</Text>
+          <Text style={[styles.orderTotal, { color: palette.amountColor }]}>{formatPHP(order.total)}</Text>
         </View>
 
         <Text style={[styles.meta, { color: theme.colors.textMuted }]} numberOfLines={1}>
@@ -348,23 +527,35 @@ export function AdminTransactionsScreen() {
           onChangeText={(value) => setStatusNotes((prev) => ({ ...prev, [order.id]: value }))}
           placeholder="Progress note (visible to customer)"
           placeholderTextColor={theme.colors.textMuted}
-          style={[styles.noteInput, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+          style={[
+            styles.noteInput,
+            { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
+          ]}
         />
 
         {actions.length ? (
           <View style={styles.actionRow}>
-            {actions.map((next) => (
-              <Pressable
-                key={next}
-                style={[styles.actionBtn, { borderColor: theme.colors.border }]}
-                onPress={() => handleStatusUpdate(order, next)}
-              >
-                <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>{STATUS_LABEL[next]}</Text>
-              </Pressable>
-            ))}
+            {actions.map((next) => {
+              const actionPalette = getActionPalette(next);
+              return (
+                <Pressable
+                  key={next}
+                  style={[styles.actionBtn, { borderColor: actionPalette.border, backgroundColor: actionPalette.bg }]}
+                  onPress={() => handleStatusUpdate(order, next)}
+                >
+                  <Text style={[styles.actionBtnText, { color: actionPalette.text }]}>{STATUS_LABEL[next]}</Text>
+                </Pressable>
+              );
+            })}
             {['approved', 'shipped', 'out_for_delivery'].includes(displayStatus) ? (
               <Pressable
-                style={[styles.actionBtn, { borderColor: theme.colors.border, backgroundColor: liveTrackingOrderId === order.id ? theme.colors.primary : theme.colors.surface }]}
+                style={[
+                  styles.actionBtn,
+                  {
+                    borderColor: theme.colors.border,
+                    backgroundColor: liveTrackingOrderId === order.id ? theme.colors.primary : theme.colors.surface,
+                  },
+                ]}
                 onPress={() => startLiveTracking(order)}
               >
                 <Text
@@ -383,26 +574,36 @@ export function AdminTransactionsScreen() {
     );
   };
 
-  const renderSectionHeader = (status: OrderStatus, title: string, icon: keyof typeof Ionicons.glyphMap, count: number) => {
+  const renderStatusRow = (status: OrderStatus) => {
+    const section = statusSectionMap.get(status);
+    if (!section) {
+      return null;
+    }
+
+    const count = ordersByStatus[status]?.length ?? 0;
     const color = getSectionColor(status);
-    const isExpanded = expandedSection === status;
 
     return (
       <Pressable
-        style={[styles.sectionHeader, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
-        onPress={() => toggleSection(status)}
+        key={status}
+        style={[styles.statusRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+        onPress={() => openStatusPage(status)}
       >
-        <View style={styles.sectionHeaderLeft}>
-          <Ionicons name={icon} size={18} color={color} />
-          <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>{title}</Text>
-          <View style={[styles.badge, { backgroundColor: color }]}>
-            <Text style={styles.badgeText}>{count}</Text>
+        <View style={styles.statusRowLeft}>
+          <Ionicons name={section.icon} size={17} color={color} />
+          <Text style={[styles.statusName, { color: theme.colors.text }]}>{section.title}</Text>
+          <View style={[styles.statusCountBadge, { backgroundColor: color }]}>
+            <Text style={styles.statusCountText}>{count}</Text>
           </View>
         </View>
-        <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textMuted} />
+        <View style={[styles.statusNavBadge, { backgroundColor: theme.colors.surface }]}>
+          <Ionicons name="chevron-forward" size={16} color={theme.colors.textMuted} />
+        </View>
       </Pressable>
     );
   };
+
+  const activeSection = activeStatus ? statusSectionMap.get(activeStatus) : null;
 
   return (
     <ScrollView
@@ -416,140 +617,196 @@ export function AdminTransactionsScreen() {
         <DateRangePicker startDate={customRange.start} endDate={customRange.end} onChange={setCustomRange} />
       ) : null}
 
-      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Shipping Methods</Text>
-        <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Distance fee rate (per km)</Text>
-        <View style={styles.row}>
-          <TextInput
-            value={deliveryRateInput}
-            onChangeText={setDeliveryRateInput}
-            placeholder="20"
-            keyboardType="decimal-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[
-              styles.input,
-              styles.feeInput,
-              { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
-            ]}
-          />
+      {activeStatus ? (
+        <>
           <Pressable
-            style={[styles.applyRateBtn, { backgroundColor: savingDeliveryRate ? theme.colors.surfaceAlt : theme.colors.primary }]}
-            onPress={submitDeliveryRate}
+            style={[styles.backRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}
+            onPress={() => setActiveStatus(null)}
           >
-            <Text style={[styles.applyRateText, { color: theme.colors.primaryContrast }]}>
-              {savingDeliveryRate ? 'Saving...' : 'Apply Rate'}
-            </Text>
+            <Ionicons name="arrow-back" size={16} color={theme.colors.text} />
+            <Text style={[styles.backText, { color: theme.colors.text }]}>Back to status groups</Text>
           </Pressable>
-        </View>
-        {deliveryRateMessage ? <Text style={[styles.meta, { color: theme.colors.textMuted }]}>{deliveryRateMessage}</Text> : null}
 
-        {shippingMethods.map((method) => (
-          <View key={method.id} style={[styles.shipRow, { borderColor: theme.colors.border }]}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.shipName, { color: theme.colors.text }]}>{method.name}</Text>
-              <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
-                {formatPHP(method.baseFee)}
-                {method.isActive ? '' : ' (Inactive)'}
-              </Text>
+          <View style={[styles.focusCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}>
+            <View style={styles.focusHeader}>
+              <View style={styles.focusTitleWrap}>
+                <Ionicons name={activeSection?.icon ?? 'list-outline'} size={18} color={getSectionColor(activeStatus)} />
+                <Text style={[styles.focusTitle, { color: theme.colors.text }]}>
+                  {activeSection?.title ?? STATUS_LABEL[activeStatus]}
+                </Text>
+              </View>
+              <View style={[styles.focusCountBadge, { backgroundColor: getSectionColor(activeStatus) }]}>
+                <Text style={styles.focusCountText}>{activeStatusOrders.length}</Text>
+              </View>
             </View>
 
-            <Pressable
-              onPress={async () => {
-                try {
-                  await deleteShippingMethod(method.id);
-                  await loadTransactions();
-                } catch {
-                  // keep current UI state
-                }
-              }}
-              style={styles.delShipBtn}
-            >
-              <Ionicons name="trash-outline" size={14} color={theme.colors.danger ?? '#EF4444'} />
-            </Pressable>
+            <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Page {statusPage} of {statusPageCount}</Text>
           </View>
-        ))}
 
-        <View style={styles.row}>
-          <TextInput
-            value={shippingForm.name}
-            onChangeText={(value) => setShippingForm((prev) => ({ ...prev, name: value }))}
-            placeholder="Name"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[
-              styles.input,
-              styles.flex1,
-              { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
-            ]}
-          />
-          <TextInput
-            value={shippingForm.baseFee}
-            onChangeText={(value) => setShippingForm((prev) => ({ ...prev, baseFee: value }))}
-            placeholder="Fee"
-            keyboardType="decimal-pad"
-            placeholderTextColor={theme.colors.textMuted}
-            style={[styles.input, styles.feeInput, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-          />
-          <Pressable
-            style={[styles.addShipBtn, { backgroundColor: savingShipping ? theme.colors.surfaceAlt : theme.colors.primary }]}
-            onPress={submitShippingMethod}
-          >
-            <Ionicons name="add" size={18} color={theme.colors.primaryContrast} />
-          </Pressable>
-        </View>
-      </View>
+          {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading...</Text> : null}
+          {!loading && activeStatusOrders.length === 0 ? (
+            <EmptyState title="No orders in this status" subtitle="Try another status or date range." />
+          ) : null}
 
-      {refunds.length > 0 ? (
-        <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Refund Queue ({refunds.length})</Text>
-          {refunds.map((request) => (
-            <View key={request.id} style={[styles.refundRow, { borderColor: theme.colors.border }]}>
-              <Text style={[styles.meta, { color: theme.colors.text }]}>Order: {request.order_id}</Text>
-              <Text style={[styles.meta, { color: theme.colors.textMuted }]}>{request.reason}</Text>
-              <View style={styles.actionRow}>
-                <Pressable
-                  style={[styles.actionBtn, { borderColor: theme.colors.border }]}
-                  onPress={async () => {
-                    await resolveRefund(request.id, false);
-                    await loadTransactions();
-                  }}
+          {statusPageOrders.length > 0 ? <View style={styles.sectionBody}>{statusPageOrders.map(renderCompactOrder)}</View> : null}
+
+          {activeStatusOrders.length > 0 ? (
+            <View style={styles.paginationRow}>
+              <Pressable
+                style={[
+                  styles.pageButton,
+                  {
+                    borderColor: theme.colors.border,
+                    backgroundColor: statusPage <= 1 ? theme.colors.surfaceAlt : theme.colors.card,
+                  },
+                ]}
+                disabled={statusPage <= 1}
+                onPress={() => setStatusPage((prev) => Math.max(1, prev - 1))}
+              >
+                <Text style={[styles.pageButtonText, { color: statusPage <= 1 ? theme.colors.textMuted : theme.colors.text }]}>Previous</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.pageButton,
+                  {
+                    borderColor: theme.colors.border,
+                    backgroundColor: statusPage >= statusPageCount ? theme.colors.surfaceAlt : theme.colors.card,
+                  },
+                ]}
+                disabled={statusPage >= statusPageCount}
+                onPress={() => setStatusPage((prev) => Math.min(statusPageCount, prev + 1))}
+              >
+                <Text
+                  style={[
+                    styles.pageButtonText,
+                    { color: statusPage >= statusPageCount ? theme.colors.textMuted : theme.colors.text },
+                  ]}
                 >
-                  <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Reject</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.actionBtn, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary }]}
-                  onPress={async () => {
-                    await resolveRefund(request.id, true);
-                    await loadTransactions();
-                  }}
-                >
-                  <Text style={[styles.actionBtnText, { color: theme.colors.primaryContrast }]}>Approve</Text>
-                </Pressable>
-              </View>
+                  Next
+                </Text>
+              </Pressable>
             </View>
-          ))}
-        </View>
-      ) : null}
+          ) : null}
+        </>
+      ) : (
+        <>
+          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+            <Pressable style={styles.shippingHeaderRow} onPress={() => setShippingExpanded((prev) => !prev)}>
+              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Shipping Methods</Text>
+              <Ionicons name={shippingExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textMuted} />
+            </Pressable>
 
-      {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading...</Text> : null}
-      {!loading && !transactions.length ? <EmptyState title="No transactions" subtitle="Try a different date range." /> : null}
+            {shippingExpanded ? (
+              <>
+                {shippingMethods.map((method) => (
+                  <View key={method.id} style={[styles.shipRow, { borderColor: theme.colors.border }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.shipName, { color: theme.colors.text }]}>{method.name}</Text>
+                      <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
+                        {formatPHP(method.baseFee)}
+                        {method.isActive ? '' : ' (Inactive)'}
+                      </Text>
+                    </View>
 
-      {STATUS_SECTIONS.map((section) => {
-        const orders = ordersByStatus[section.status] ?? [];
-        return (
-          <View key={section.status}>
-            {renderSectionHeader(section.status, section.title, section.icon, orders.length)}
-            {expandedSection === section.status ? (
-              <View style={styles.sectionBody}>
-                {orders.length ? (
-                  orders.map(renderCompactOrder)
-                ) : (
-                  <Text style={[styles.meta, { color: theme.colors.textMuted, padding: 10 }]}>No orders in this status.</Text>
-                )}
-              </View>
+                    <Pressable
+                      onPress={async () => {
+                        try {
+                          await deleteShippingMethod(method.id);
+                          await loadTransactions();
+                        } catch {
+                          // keep current UI state
+                        }
+                      }}
+                      style={styles.delShipBtn}
+                    >
+                      <Ionicons name="trash-outline" size={14} color={theme.colors.danger ?? '#EF4444'} />
+                    </Pressable>
+                  </View>
+                ))}
+
+                <View style={styles.row}>
+                  <TextInput
+                    value={shippingForm.name}
+                    onChangeText={(value) => setShippingForm((prev) => ({ ...prev, name: value }))}
+                    placeholder="Name"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[
+                      styles.input,
+                      styles.flex1,
+                      { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
+                    ]}
+                  />
+                  <TextInput
+                    value={shippingForm.baseFee}
+                    onChangeText={(value) => setShippingForm((prev) => ({ ...prev, baseFee: value }))}
+                    placeholder="Fee"
+                    keyboardType="decimal-pad"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[
+                      styles.input,
+                      styles.feeInput,
+                      { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
+                    ]}
+                  />
+                  <Pressable
+                    style={[styles.addShipBtn, { backgroundColor: savingShipping ? theme.colors.surfaceAlt : theme.colors.primary }]}
+                    onPress={submitShippingMethod}
+                  >
+                    <Ionicons name="add" size={18} color={theme.colors.primaryContrast} />
+                  </Pressable>
+                </View>
+              </>
             ) : null}
           </View>
-        );
-      })}
+
+          {refunds.length > 0 ? (
+            <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Refund Queue ({refunds.length})</Text>
+              {refunds.map((request) => (
+                <View key={request.id} style={[styles.refundRow, { borderColor: theme.colors.border }]}>
+                  <Text style={[styles.meta, { color: theme.colors.text }]}>Order: {request.order_id}</Text>
+                  <Text style={[styles.meta, { color: theme.colors.textMuted }]}>{request.reason}</Text>
+                  <View style={styles.actionRow}>
+                    <Pressable
+                      style={[styles.actionBtn, { borderColor: theme.colors.border }]}
+                      onPress={async () => {
+                        await resolveRefund(request.id, false);
+                        await loadTransactions();
+                      }}
+                    >
+                      <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Reject</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.actionBtn, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary }]}
+                      onPress={async () => {
+                        await resolveRefund(request.id, true);
+                        await loadTransactions();
+                      }}
+                    >
+                      <Text style={[styles.actionBtnText, { color: theme.colors.primaryContrast }]}>Approve</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading...</Text> : null}
+          {!loading && !transactions.length ? <EmptyState title="No transactions" subtitle="Try a different date range." /> : null}
+
+          {STATUS_GROUPS.map((group) => (
+            <View key={group.key} style={[styles.groupCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}>
+              <View style={styles.groupHeader}>
+                <View style={styles.groupHeaderLeft}>
+                  <Ionicons name={group.icon} size={16} color={theme.colors.primary} />
+                  <Text style={[styles.groupTitle, { color: theme.colors.text }]}>{group.title}</Text>
+                </View>
+              </View>
+              <View style={styles.groupRows}>{group.statuses.map(renderStatusRow)}</View>
+            </View>
+          ))}
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -558,12 +815,11 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { gap: 8, padding: 14 },
   card: { borderRadius: 14, borderWidth: 1, gap: 6, padding: 12 },
+  shippingHeaderRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   cardTitle: { fontSize: 15, fontWeight: '800' },
   row: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   flex1: { flex: 1 },
   feeInput: { width: 74 },
-  applyRateBtn: { alignItems: 'center', borderRadius: 10, justifyContent: 'center', minHeight: 38, paddingHorizontal: 12 },
-  applyRateText: { fontSize: 12, fontWeight: '800' },
   input: { borderRadius: 10, borderWidth: 1, fontSize: 13, paddingHorizontal: 8, paddingVertical: 8 },
   meta: { fontSize: 11, fontWeight: '500' },
   helper: { fontSize: 13, fontWeight: '500' },
@@ -572,28 +828,74 @@ const styles = StyleSheet.create({
   delShipBtn: { padding: 4 },
   addShipBtn: { alignItems: 'center', borderRadius: 10, height: 38, justifyContent: 'center', width: 38 },
   refundRow: { borderRadius: 8, borderWidth: 0.5, gap: 4, padding: 8 },
-  sectionHeader: {
+  groupCard: { borderRadius: 14, borderWidth: 1, gap: 8, padding: 10 },
+  groupHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  groupHeaderLeft: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  groupTitle: { fontSize: 16, fontWeight: '800' },
+  groupRows: { gap: 8 },
+  statusRow: {
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 11,
+  },
+  statusRowLeft: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  statusName: { fontSize: 14, fontWeight: '800' },
+  statusCountBadge: {
+    alignItems: 'center',
+    borderRadius: 999,
+    justifyContent: 'center',
+    minWidth: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  statusCountText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  statusNavBadge: {
+    alignItems: 'center',
+    borderRadius: 999,
+    justifyContent: 'center',
+    minWidth: 26,
+    paddingHorizontal: 4,
+    paddingVertical: 3,
+  },
+  backRow: {
     alignItems: 'center',
     borderRadius: 10,
     borderWidth: 1,
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
-  sectionHeaderLeft: { alignItems: 'center', flexDirection: 'row', gap: 8 },
-  sectionTitle: { fontSize: 14, fontWeight: '800' },
-  badge: { alignItems: 'center', borderRadius: 10, justifyContent: 'center', minWidth: 20, paddingHorizontal: 6, paddingVertical: 2 },
-  badgeText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
+  backText: { fontSize: 12, fontWeight: '700' },
+  focusCard: { borderRadius: 12, borderWidth: 1, gap: 5, paddingHorizontal: 12, paddingVertical: 10 },
+  focusHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  focusTitleWrap: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  focusTitle: { fontSize: 15, fontWeight: '900' },
+  focusCountBadge: {
+    alignItems: 'center',
+    borderRadius: 999,
+    justifyContent: 'center',
+    minWidth: 30,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  focusCountText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   sectionBody: { gap: 4, paddingLeft: 4, paddingRight: 4 },
-  orderRow: { borderBottomWidth: 0.5, gap: 3, paddingVertical: 8 },
+  orderRow: { borderRadius: 10, borderWidth: 1, gap: 3, paddingHorizontal: 10, paddingVertical: 9 },
   orderHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   orderNo: { fontSize: 13, fontWeight: '800' },
-  statusBadge: { fontSize: 11, fontWeight: '800' },
+  statusBadge: { borderRadius: 999, fontSize: 10, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 3 },
   orderMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   orderTotal: { fontSize: 14, fontWeight: '900' },
   noteInput: { borderRadius: 8, borderWidth: 1, fontSize: 12, marginTop: 6, paddingHorizontal: 8, paddingVertical: 7 },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
   actionBtn: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 5 },
   actionBtnText: { fontSize: 11, fontWeight: '700' },
+  paginationRow: { flexDirection: 'row', gap: 10, justifyContent: 'center' },
+  pageButton: { borderRadius: 999, borderWidth: 1, minWidth: 110, paddingVertical: 9 },
+  pageButtonText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
 });

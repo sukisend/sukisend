@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AppVideo } from '../../components/AppVideo';
 import { EmptyState } from '../../components/EmptyState';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
@@ -9,8 +11,10 @@ import {
   fetchSellerChatMessages,
   getOrCreateSellerThread,
   markSellerChatThreadRead,
+  sendSellerChatAttachmentMessage,
   sendSellerChatMessage,
 } from '../../services/chatModerationService';
+import { pickAndUploadChatMedia } from '../../services/mediaService';
 import { SellerChatMessage } from '../../types/models';
 import { formatDateTime } from '../../utils/date';
 
@@ -23,6 +27,10 @@ export function ChatSellerScreen() {
   const [messages, setMessages] = useState<SellerChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [mediaError, setMediaError] = useState('');
+  const messagesScrollRef = useRef<ScrollView | null>(null);
+  const previousLatestMessageKeyRef = useRef<string | null>(null);
   const isCustomer = role === 'customer' && !!profile?.id;
 
   const titleLine = useMemo(() => {
@@ -32,6 +40,14 @@ export function ChatSellerScreen() {
     const first = profile?.fullName?.trim().split(/\s+/)[0] ?? 'Suki';
     return `Hi ${first}, chat with our store team for order concerns and delivery updates.`;
   }, [isCustomer, profile?.fullName]);
+
+  const latestMessageKey = useMemo(() => {
+    const last = messages[messages.length - 1];
+    if (!last) {
+      return null;
+    }
+    return `${last.id}:${last.createdAt}`;
+  }, [messages]);
 
   useEffect(() => {
     if (!isCustomer || !profile?.id) {
@@ -96,6 +112,22 @@ export function ChatSellerScreen() {
     };
   }, [threadId]);
 
+  useEffect(() => {
+    if (!latestMessageKey) {
+      previousLatestMessageKeyRef.current = null;
+      return;
+    }
+
+    const hasNewMessage = previousLatestMessageKeyRef.current !== latestMessageKey;
+    if (hasNewMessage) {
+      requestAnimationFrame(() => {
+        messagesScrollRef.current?.scrollToEnd({ animated: true });
+      });
+    }
+
+    previousLatestMessageKeyRef.current = latestMessageKey;
+  }, [latestMessageKey]);
+
   const sendMessage = async () => {
     if (!threadId || !draft.trim() || sending) {
       return;
@@ -113,6 +145,48 @@ export function ChatSellerScreen() {
       setDraft(nextText);
     } finally {
       setSending(false);
+    }
+  };
+
+  const sendAttachment = async () => {
+    if (!threadId || !profile?.id || uploadingMedia || sending) {
+      return;
+    }
+
+    try {
+      setUploadingMedia(true);
+      setMediaError('');
+      const picked = await pickAndUploadChatMedia({
+        folder: `seller-chat/${profile.id}`,
+        maxBytes: 10 * 1024 * 1024,
+      });
+
+      if (!picked) {
+        return;
+      }
+
+      await sendSellerChatAttachmentMessage(
+        threadId,
+        {
+          url: picked.url,
+          type: picked.type,
+          mimeType: picked.mimeType,
+          sizeBytes: picked.sizeBytes,
+        },
+        draft.trim() ? draft.trim() : undefined,
+      );
+
+      if (draft.trim()) {
+        setDraft('');
+      }
+
+      const nextMessages = await fetchSellerChatMessages(threadId);
+      setMessages(nextMessages);
+      await markSellerChatThreadRead(threadId);
+    } catch (error) {
+      setMediaError(error instanceof Error ? error.message : 'Unable to send media right now.');
+    } finally {
+      setUploadingMedia(false);
     }
   };
 
@@ -143,7 +217,13 @@ export function ChatSellerScreen() {
         <Text style={[styles.subtitle, { color: theme.colors.textMuted }]}>{titleLine}</Text>
       </View>
 
-      <ScrollView style={styles.messages} contentContainerStyle={styles.messagesContent}>
+      <ScrollView
+        ref={(instance) => {
+          messagesScrollRef.current = instance;
+        }}
+        style={styles.messages}
+        contentContainerStyle={styles.messagesContent}
+      >
         {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading conversation...</Text> : null}
         {!loading && messages.length === 0 ? (
           <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
@@ -163,9 +243,27 @@ export function ChatSellerScreen() {
                   },
                 ]}
               >
-                <Text style={[styles.messageText, { color: own ? theme.colors.primaryContrast : theme.colors.text }]}>
-                  {message.message}
-                </Text>
+                {message.attachment ? (
+                  message.attachment.type === 'image' ? (
+                    <Image source={{ uri: message.attachment.url }} style={styles.attachmentImage} resizeMode="cover" />
+                  ) : (
+                    <AppVideo
+                      source={{ uri: message.attachment.url }}
+                      style={styles.attachmentVideo}
+                      contentFit="contain"
+                      nativeControls
+                      autoPlay={false}
+                      loop={false}
+                      muted={false}
+                      allowsFullscreen
+                    />
+                  )
+                ) : null}
+                {message.message.trim().length > 0 ? (
+                  <Text style={[styles.messageText, { color: own ? theme.colors.primaryContrast : theme.colors.text }]}>
+                    {message.message}
+                  </Text>
+                ) : null}
                 <Text
                   style={[
                     styles.messageMeta,
@@ -190,6 +288,19 @@ export function ChatSellerScreen() {
           },
         ]}
       >
+        <View style={styles.composeTopRow}>
+          <Pressable
+            style={[styles.mediaButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.background }]}
+            onPress={sendAttachment}
+            disabled={uploadingMedia || sending}
+          >
+            <Ionicons name="attach-outline" size={16} color={theme.colors.text} />
+            <Text style={[styles.mediaButtonText, { color: theme.colors.text }]}>
+              {uploadingMedia ? 'Uploading...' : 'Photo/Video'}
+            </Text>
+          </Pressable>
+          <Text style={[styles.attachmentHint, { color: theme.colors.textMuted }]}>Max 10MB</Text>
+        </View>
         <TextInput
           value={draft}
           onChangeText={setDraft}
@@ -205,10 +316,11 @@ export function ChatSellerScreen() {
             },
           ]}
         />
+        {mediaError ? <Text style={[styles.helper, { color: theme.colors.warning ?? '#F59E0B' }]}>{mediaError}</Text> : null}
         <Pressable
           style={[styles.sendButton, { backgroundColor: sending ? theme.colors.surfaceAlt : theme.colors.primary }]}
           onPress={sendMessage}
-          disabled={sending || !draft.trim()}
+          disabled={sending || uploadingMedia || !draft.trim()}
         >
           <Text
             style={[
@@ -297,6 +409,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 10,
   },
+  composeTopRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  mediaButton: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  mediaButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  attachmentHint: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
   input: {
     borderRadius: 10,
     borderWidth: 1,
@@ -316,5 +450,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     textAlign: 'center',
+  },
+  attachmentImage: {
+    borderRadius: 8,
+    height: 170,
+    marginBottom: 6,
+    width: 210,
+  },
+  attachmentVideo: {
+    borderRadius: 8,
+    height: 190,
+    marginBottom: 6,
+    width: 220,
   },
 });

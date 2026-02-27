@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { ModalBackdrop } from './ModalBackdrop';
 import { useTheme } from '../providers/ThemeProvider';
 import { Category, ProductSortOption } from '../types/models';
 import { getCategoryIcon } from '../utils/categoryIcons';
@@ -39,7 +40,7 @@ export function FilterModal({
 
     return (
         <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-            <View style={styles.overlay}>
+            <ModalBackdrop align="flex-end" overlayOpacity={0.32} intensity={35} paddingHorizontal={0}>
                 <View style={[styles.sheet, { backgroundColor: theme.colors.card }]}>
                     <View style={styles.handle} />
 
@@ -122,17 +123,12 @@ export function FilterModal({
                         </Text>
                     </Pressable>
                 </View>
-            </View>
+            </ModalBackdrop>
         </Modal>
     );
 }
 
 const styles = StyleSheet.create({
-    overlay: {
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        flex: 1,
-        justifyContent: 'flex-end',
-    },
     sheet: {
         borderTopLeftRadius: 24,
         borderTopRightRadius: 24,

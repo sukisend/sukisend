@@ -1,9 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { useEffect, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ThemeModeToggle } from '../components/ThemeModeToggle';
+import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
+import { fetchCustomerUnreadSellerMessagesCount } from '../services/chatModerationService';
 import { useCartStore } from '../store/cartStore';
 import { AccountScreen } from '../screens/customer/AccountScreen';
 import { AuthScreen } from '../screens/customer/AuthScreen';
@@ -22,8 +26,39 @@ const Tab = createBottomTabNavigator<CustomerTabsParamList>();
 function CustomerTabs() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
-  const cartCount = useCartStore((state) => state.items.reduce((sum, item) => sum + item.quantity, 0));
+  const { role, profile } = useAuth();
+  const cartCount = useCartStore((state) => state.items.length);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const bottomInset = Math.max(insets.bottom, 8);
+
+  useEffect(() => {
+    if (role !== 'customer' || !profile?.id) {
+      setChatUnreadCount(0);
+      return;
+    }
+
+    let active = true;
+    const syncChatUnread = async () => {
+      try {
+        const next = await fetchCustomerUnreadSellerMessagesCount(profile.id);
+        if (active) {
+          setChatUnreadCount(next);
+        }
+      } catch {
+        if (active) {
+          setChatUnreadCount(0);
+        }
+      }
+    };
+
+    syncChatUnread();
+    const timer = setInterval(syncChatUnread, 5000);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [profile?.id, role]);
 
   return (
     <Tab.Navigator
@@ -64,7 +99,13 @@ function CustomerTabs() {
         }}
       />
       <Tab.Screen name="Orders" component={OrdersScreen} />
-      <Tab.Screen name="Account" component={AccountScreen} />
+      <Tab.Screen
+        name="Account"
+        component={AccountScreen}
+        options={{
+          tabBarBadge: chatUnreadCount > 0 ? chatUnreadCount : undefined,
+        }}
+      />
     </Tab.Navigator>
   );
 }
@@ -78,6 +119,7 @@ export function CustomerNavigator() {
         headerStyle: { backgroundColor: theme.colors.surface },
         headerTintColor: theme.colors.text,
         headerTitleStyle: { fontWeight: '800' },
+        headerRight: () => <ThemeModeToggle compact showLabel={false} />,
         animation: 'fade',
       }}
     >

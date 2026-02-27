@@ -27,7 +27,7 @@ export function AdminDashboardScreen() {
   const [customRange, setCustomRange] = useState(DEFAULT_CUSTOM_RANGE);
   const [loading, setLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
-  const showLoader = useMinimumLoader(loading, 6000);
+  const showLoader = useMinimumLoader(loading, 500);
 
   const customRangeIso: DateRange = useMemo(
     () => ({
@@ -72,19 +72,52 @@ export function AdminDashboardScreen() {
       {snapshot ? (
         <>
           <View style={styles.metricsGrid}>
-            <MetricCard label="Gross Sales" value={formatPHP(snapshot.metrics.grossSales)} />
-            <MetricCard label="Paid Orders" value={`${snapshot.metrics.totalOrders}`} />
-            <MetricCard label="Profit" value={formatPHP(snapshot.metrics.profit)} />
-            <MetricCard label="Low Stock Items" value={`${snapshot.metrics.lowStockCount}`} />
-            <MetricCard label="Pending" value={`${snapshot.metrics.pendingOrders ?? 0}`} />
-            <MetricCard label="Outgoing" value={`${snapshot.metrics.outgoingOrders ?? 0}`} />
+            <MetricCard
+              label="Gross Sales"
+              value={formatPHP(snapshot.metrics.grossSales)}
+              accentColor="#22C55E"
+              tintColor={theme.isDark ? 'rgba(34, 197, 94, 0.16)' : 'rgba(34, 197, 94, 0.12)'}
+            />
+            <MetricCard
+              label="Paid Orders"
+              value={`${snapshot.metrics.totalOrders}`}
+              accentColor="#3B82F6"
+              tintColor={theme.isDark ? 'rgba(59, 130, 246, 0.15)' : 'rgba(59, 130, 246, 0.1)'}
+            />
+            <MetricCard
+              label="Profit"
+              value={formatPHP(snapshot.metrics.profit)}
+              accentColor="#14B8A6"
+              tintColor={theme.isDark ? 'rgba(20, 184, 166, 0.16)' : 'rgba(20, 184, 166, 0.11)'}
+            />
+            <MetricCard
+              label="Low Stock Items"
+              value={`${snapshot.metrics.lowStockCount}`}
+              accentColor="#F59E0B"
+              tintColor={theme.isDark ? 'rgba(245, 158, 11, 0.18)' : 'rgba(245, 158, 11, 0.12)'}
+            />
+            <MetricCard
+              label="Pending"
+              value={`${snapshot.metrics.pendingOrders ?? 0}`}
+              accentColor="#F97316"
+              tintColor={theme.isDark ? 'rgba(249, 115, 22, 0.16)' : 'rgba(249, 115, 22, 0.11)'}
+            />
+            <MetricCard
+              label="Outgoing"
+              value={`${snapshot.metrics.outgoingOrders ?? 0}`}
+              accentColor="#A855F7"
+              tintColor={theme.isDark ? 'rgba(168, 85, 247, 0.15)' : 'rgba(168, 85, 247, 0.1)'}
+            />
           </View>
 
           <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
             <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Top Selling Products</Text>
             {snapshot.topProducts.length ? (
               snapshot.topProducts.map((item) => (
-                <View key={item.productId} style={styles.topProductRow}>
+                <View
+                  key={item.productId}
+                  style={[styles.topProductRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                >
                   {item.imageUrl ? (
                     <Image source={{ uri: item.imageUrl }} style={styles.topProductImage} />
                   ) : (
@@ -110,7 +143,10 @@ export function AdminDashboardScreen() {
             <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Sales by Category</Text>
             {snapshot.categorySales.length ? (
               snapshot.categorySales.map((entry) => (
-                <View key={entry.category} style={styles.listRow}>
+                <View
+                  key={entry.category}
+                  style={[styles.listRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                >
                   <Text style={[styles.listLabel, { color: theme.colors.text }]}>{entry.category}</Text>
                   <Text style={[styles.listValue, { color: theme.colors.primary }]}>{formatPHP(entry.sales)}</Text>
                 </View>
@@ -124,7 +160,10 @@ export function AdminDashboardScreen() {
             <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Low / Out of Stock Alerts</Text>
             {snapshot.lowStockItems.length ? (
               snapshot.lowStockItems.map((item) => (
-                <View key={item.id} style={styles.listRow}>
+                <View
+                  key={item.id}
+                  style={[styles.listRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                >
                   <Text style={[styles.listLabel, { color: theme.colors.text }]}>{item.name}</Text>
                   <Text style={[styles.listValue, { color: item.stock <= 0 ? theme.colors.danger : theme.colors.warning }]}>
                     {item.stock <= 0 ? 'Out of stock' : `${item.stock} left`}
@@ -180,13 +219,21 @@ const styles = StyleSheet.create({
   },
   listRow: {
     alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   topProductRow: {
     alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
     flexDirection: 'row',
     gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   topProductImage: {
     borderRadius: 8,

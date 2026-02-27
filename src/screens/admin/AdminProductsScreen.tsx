@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
@@ -80,6 +80,39 @@ const VARIANT_VALUE_PRESETS: Record<string, string[]> = {
   length: ['5cm', '10cm', '20cm', '30cm', '1in', '2in', '3in'],
   pack: ['1 pc', '3 pcs', '6 pcs', '12 pcs'],
 };
+const STOCK_SORT_OPTIONS = [
+  { id: 'newest', label: 'Newest' },
+  { id: 'name_asc', label: 'A-Z' },
+  { id: 'stock_low', label: 'Low-High Stock' },
+  { id: 'stock_high', label: 'High-Low Stock' },
+] as const;
+type StockSortOption = (typeof STOCK_SORT_OPTIONS)[number]['id'];
+
+function getActiveVariantStocks(product: Product) {
+  return (product.variants ?? [])
+    .filter((variant) => variant.isActive && Number.isFinite(variant.stockOverride))
+    .map((variant) => Number(variant.stockOverride));
+}
+
+function getEffectiveStockForSort(product: Product) {
+  const variantStocks = getActiveVariantStocks(product);
+  if (!variantStocks.length) {
+    return product.stock;
+  }
+
+  return Math.min(product.stock, ...variantStocks);
+}
+
+function getLowVariantLabels(product: Product) {
+  return (product.variants ?? [])
+    .filter(
+      (variant) =>
+        variant.isActive &&
+        Number.isFinite(variant.stockOverride) &&
+        Number(variant.stockOverride) <= Number(product.minStock),
+    )
+    .map((variant) => `${variant.value}: ${Number(variant.stockOverride)}`);
+}
 
 export function AdminProductsScreen() {
   const { theme } = useTheme();
@@ -89,10 +122,15 @@ export function AdminProductsScreen() {
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
+  const [productFormExpanded, setProductFormExpanded] = useState(false);
+  const [productSearch, setProductSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [stockSort, setStockSort] = useState<StockSortOption>('newest');
   const [saving, setSaving] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null);
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [variantsExpanded, setVariantsExpanded] = useState(false);
   const [variants, setVariants] = useState<ProductVariantFormState[]>([]);
   const [variantDraft, setVariantDraft] = useState<VariantDraftState>(EMPTY_VARIANT_DRAFT);
   // Category CRUD
@@ -105,11 +143,41 @@ export function AdminProductsScreen() {
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editForm, setEditForm] = useState<ProductFormState>(EMPTY_FORM);
   const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
+  const [editVariantsExpanded, setEditVariantsExpanded] = useState(false);
   const [editVariants, setEditVariants] = useState<ProductVariantFormState[]>([]);
   const [editVariantDraft, setEditVariantDraft] = useState<VariantDraftState>(EMPTY_VARIANT_DRAFT);
   const [editSaving, setEditSaving] = useState(false);
   const [editUploadProgress, setEditUploadProgress] = useState<{ completed: number; total: number } | null>(null);
-  const showLoader = useMinimumLoader(loading, 6000);
+  const showLoader = useMinimumLoader(loading, 500);
+
+  const filteredProducts = useMemo(() => {
+    const keyword = productSearch.trim().toLowerCase();
+    const selectedCategory = categoryFilter.trim().toLowerCase();
+    let rows = products.filter((product) => {
+      const matchesSearch =
+        !keyword ||
+        product.name.toLowerCase().includes(keyword) ||
+        product.categoryName.toLowerCase().includes(keyword) ||
+        (product.sku ?? '').toLowerCase().includes(keyword);
+      const matchesCategory = selectedCategory === 'all' || product.categoryName.toLowerCase() === selectedCategory;
+      return matchesSearch && matchesCategory;
+    });
+
+    rows = [...rows].sort((a, b) => {
+      if (stockSort === 'name_asc') {
+        return a.name.localeCompare(b.name);
+      }
+      if (stockSort === 'stock_low') {
+        return getEffectiveStockForSort(a) - getEffectiveStockForSort(b);
+      }
+      if (stockSort === 'stock_high') {
+        return getEffectiveStockForSort(b) - getEffectiveStockForSort(a);
+      }
+      return 0;
+    });
+
+    return rows;
+  }, [categoryFilter, productSearch, products, stockSort]);
 
   const loadProducts = async (targetPage = page) => {
     setLoading(true);
@@ -192,6 +260,7 @@ export function AdminProductsScreen() {
   const resetForm = () => {
     setForm(EMPTY_FORM);
     setImageUrls([]);
+    setVariantsExpanded(false);
     setVariants([]);
     setVariantDraft(EMPTY_VARIANT_DRAFT);
     setUploadProgress(null);
@@ -208,7 +277,7 @@ export function AdminProductsScreen() {
     const minStock = Number(form.minStock || '0');
     const discountPercent = clampPercent(Number(form.discountPercent || '0'));
     const salePrice = computeSalePrice(price, discountPercent);
-    const variantBasePrice = salePrice ?? price;
+    const variantBasePrice = price;
     if (!Number.isFinite(cost) || !Number.isFinite(price) || !Number.isFinite(stock)) {
       showAlert({ title: 'Invalid numbers', message: 'Cost, price, and stock must be valid numbers.', tone: 'error' });
       return;
@@ -261,11 +330,12 @@ export function AdminProductsScreen() {
         id: variant.id,
         name: variant.name,
         value: variant.value,
-        priceDelta: String(Number(((product.onSale && product.salePrice !== undefined ? product.salePrice : product.price) + (variant.priceDelta ?? 0)).toFixed(2))),
+        priceDelta: String(Number((product.price + (variant.priceDelta ?? 0)).toFixed(2))),
         stockOverride: variant.stockOverride === undefined ? '' : String(variant.stockOverride),
         isActive: variant.isActive ?? true,
       })),
     );
+    setEditVariantsExpanded(false);
     setEditVariantDraft(EMPTY_VARIANT_DRAFT);
     setEditModalVisible(true);
   };
@@ -278,7 +348,7 @@ export function AdminProductsScreen() {
     const minStock = Number(editForm.minStock || '0');
     const discountPercent = clampPercent(Number(editForm.discountPercent || '0'));
     const salePrice = computeSalePrice(price, discountPercent);
-    const variantBasePrice = salePrice ?? price;
+    const variantBasePrice = price;
     if (!Number.isFinite(cost) || !Number.isFinite(price) || !Number.isFinite(stock)) {
       showAlert({ title: 'Invalid numbers', message: 'Cost, price, and stock must be valid numbers.', tone: 'error' });
       return;
@@ -388,6 +458,8 @@ export function AdminProductsScreen() {
     setVariantRows: React.Dispatch<React.SetStateAction<ProductVariantFormState[]>>,
     draft: VariantDraftState,
     setDraft: React.Dispatch<React.SetStateAction<VariantDraftState>>,
+    variantsOpen: boolean,
+    setVariantsOpen: React.Dispatch<React.SetStateAction<boolean>>,
   ) => {
     const changeField = (key: keyof ProductFormState, value: string) => setF((prev) => ({ ...prev, [key]: value }));
     const fieldLabel = (label: string, required = false) => (
@@ -560,178 +632,188 @@ export function AdminProductsScreen() {
         </View>
 
         <View style={[styles.variantCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
-          <Text style={[styles.variantTitle, { color: theme.colors.text }]}>Variants (optional)</Text>
-          <Text style={[styles.variantHint, { color: theme.colors.textMuted }]}>
-            Add manual options like Color, Size, Weight, Volume, or custom choices.
-            Set Variant Price as final selling price for that option.
-          </Text>
+          <Pressable style={styles.collapsibleHeader} onPress={() => setVariantsOpen((prev) => !prev)}>
+            <Text style={[styles.variantTitle, { color: theme.colors.text }]}>Variants (optional)</Text>
+            <Ionicons name={variantsOpen ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textMuted} />
+          </Pressable>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {VARIANT_NAME_PRESETS.map((name) => (
-              <Pressable
-                key={name}
-                style={[styles.chip, { backgroundColor: theme.colors.surfaceAlt }]}
-                onPress={() => setDraft((prev) => ({ ...prev, name }))}
-              >
-                <Text style={[styles.chipText, { color: theme.colors.text }]}>{name}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+          {variantsOpen ? (
+            <>
+              <Text style={[styles.variantHint, { color: theme.colors.textMuted }]}>
+                Add manual options like Color, Size, Weight, Volume, or custom choices.
+                Variant price follows the same discount percent as the main product.
+              </Text>
 
-          <View style={styles.row}>
-            <View style={styles.half}>
-              {fieldLabel('Variant Name')}
-              <TextInput
-                value={draft.name}
-                onChangeText={(value) => setDraft((prev) => ({ ...prev, name: value }))}
-                placeholder="e.g. Color"
-                placeholderTextColor={theme.colors.textMuted}
-                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-              />
-            </View>
-            <View style={styles.half}>
-              {fieldLabel('Variant Value')}
-              <TextInput
-                value={draft.value}
-                onChangeText={(value) => setDraft((prev) => ({ ...prev, value }))}
-                placeholder="e.g. Blue"
-                placeholderTextColor={theme.colors.textMuted}
-                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-              />
-            </View>
-          </View>
-          <View style={styles.row}>
-            <View style={styles.half}>
-              {fieldLabel('Variant Price')}
-              <TextInput
-                value={draft.priceDelta}
-                onChangeText={(value) => setDraft((prev) => ({ ...prev, priceDelta: value }))}
-                placeholder={f.price || 'Same as base price'}
-                keyboardType="decimal-pad"
-                placeholderTextColor={theme.colors.textMuted}
-                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-              />
-            </View>
-            <View style={styles.half}>
-              {fieldLabel('Stock Override')}
-              <TextInput
-                value={draft.stockOverride}
-                onChangeText={(value) => setDraft((prev) => ({ ...prev, stockOverride: value }))}
-                placeholder="optional"
-                keyboardType="number-pad"
-                placeholderTextColor={theme.colors.textMuted}
-                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-              />
-            </View>
-            <Pressable
-              style={[styles.variantAddBtn, { backgroundColor: theme.colors.primary }]}
-              onPress={() => addVariantFromDraft(draft, setDraft, setVariantRows)}
-            >
-              <Ionicons name="add" size={18} color={theme.colors.primaryContrast} />
-            </Pressable>
-          </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                {VARIANT_NAME_PRESETS.map((name) => (
+                  <Pressable
+                    key={name}
+                    style={[styles.chip, { backgroundColor: theme.colors.surfaceAlt }]}
+                    onPress={() => setDraft((prev) => ({ ...prev, name }))}
+                  >
+                    <Text style={[styles.chipText, { color: theme.colors.text }]}>{name}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
 
-          {presetValues.length ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-              {presetValues.map((value) => (
-                <Pressable
-                  key={value}
-                  style={[styles.chip, { backgroundColor: theme.colors.surfaceAlt }]}
-                  onPress={() => setDraft((prev) => ({ ...prev, value }))}
-                >
-                  <Text style={[styles.chipText, { color: theme.colors.text }]}>{value}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          ) : null}
-
-          {variantRows.length ? (
-            <View style={styles.variantList}>
-              {variantRows.map((variant, index) => (
-                <View key={`${variant.id ?? 'draft'}-${index}`} style={[styles.variantRowCard, { borderColor: theme.colors.border }]}>
-                  <View style={styles.row}>
-                    <View style={styles.half}>
-                      {fieldLabel('Name')}
-                      <TextInput
-                        value={variant.name}
-                        onChangeText={(value) =>
-                          setVariantRows((prev) =>
-                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, name: value } : row)),
-                          )
-                        }
-                        placeholder="Name"
-                        placeholderTextColor={theme.colors.textMuted}
-                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                      />
-                    </View>
-                    <View style={styles.half}>
-                      {fieldLabel('Value')}
-                      <TextInput
-                        value={variant.value}
-                        onChangeText={(value) =>
-                          setVariantRows((prev) =>
-                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, value } : row)),
-                          )
-                        }
-                        placeholder="Value"
-                        placeholderTextColor={theme.colors.textMuted}
-                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                      />
-                    </View>
-                  </View>
-                  <View style={styles.row}>
-                    <View style={styles.half}>
-                      {fieldLabel('Variant Price')}
-                      <TextInput
-                        value={variant.priceDelta}
-                        onChangeText={(value) =>
-                          setVariantRows((prev) =>
-                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, priceDelta: value } : row)),
-                          )
-                        }
-                        placeholder={f.price || 'Same as base price'}
-                        keyboardType="decimal-pad"
-                        placeholderTextColor={theme.colors.textMuted}
-                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                      />
-                    </View>
-                    <View style={styles.half}>
-                      {fieldLabel('Stock')}
-                      <TextInput
-                        value={variant.stockOverride}
-                        onChangeText={(value) =>
-                          setVariantRows((prev) =>
-                            prev.map((row, rowIndex) => (rowIndex === index ? { ...row, stockOverride: value } : row)),
-                          )
-                        }
-                        placeholder="optional"
-                        keyboardType="number-pad"
-                        placeholderTextColor={theme.colors.textMuted}
-                        style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
-                      />
-                    </View>
-                    <Pressable
-                      style={[styles.iconBtnLg, { backgroundColor: variant.isActive ? theme.colors.success : theme.colors.surfaceAlt }]}
-                      onPress={() =>
-                        setVariantRows((prev) =>
-                          prev.map((row, rowIndex) => (rowIndex === index ? { ...row, isActive: !row.isActive } : row)),
-                        )
-                      }
-                    >
-                      <Ionicons name={variant.isActive ? 'checkmark' : 'pause'} size={16} color="#FFFFFF" />
-                    </Pressable>
-                    <Pressable
-                      style={[styles.iconBtnLg, { backgroundColor: theme.colors.surfaceAlt }]}
-                      onPress={() => setVariantRows((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
-                    >
-                      <Ionicons name="trash-outline" size={16} color={theme.colors.danger ?? '#EF4444'} />
-                    </Pressable>
-                  </View>
+              <View style={styles.row}>
+                <View style={styles.half}>
+                  {fieldLabel('Variant Name')}
+                  <TextInput
+                    value={draft.name}
+                    onChangeText={(value) => setDraft((prev) => ({ ...prev, name: value }))}
+                    placeholder="e.g. Color"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                  />
                 </View>
-              ))}
-            </View>
+                <View style={styles.half}>
+                  {fieldLabel('Variant Value')}
+                  <TextInput
+                    value={draft.value}
+                    onChangeText={(value) => setDraft((prev) => ({ ...prev, value }))}
+                    placeholder="e.g. Blue"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                  />
+                </View>
+              </View>
+              <View style={styles.row}>
+                <View style={styles.half}>
+                  {fieldLabel('Variant Price')}
+                  <TextInput
+                    value={draft.priceDelta}
+                    onChangeText={(value) => setDraft((prev) => ({ ...prev, priceDelta: value }))}
+                    placeholder={f.price || 'Same as base price'}
+                    keyboardType="decimal-pad"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                  />
+                </View>
+                <View style={styles.half}>
+                  {fieldLabel('Stock Override')}
+                  <TextInput
+                    value={draft.stockOverride}
+                    onChangeText={(value) => setDraft((prev) => ({ ...prev, stockOverride: value }))}
+                    placeholder="optional"
+                    keyboardType="number-pad"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                  />
+                </View>
+                <Pressable
+                  style={[styles.variantAddBtn, { backgroundColor: theme.colors.primary }]}
+                  onPress={() => addVariantFromDraft(draft, setDraft, setVariantRows)}
+                >
+                  <Ionicons name="add" size={18} color={theme.colors.primaryContrast} />
+                </Pressable>
+              </View>
+
+              {presetValues.length ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                  {presetValues.map((value) => (
+                    <Pressable
+                      key={value}
+                      style={[styles.chip, { backgroundColor: theme.colors.surfaceAlt }]}
+                      onPress={() => setDraft((prev) => ({ ...prev, value }))}
+                    >
+                      <Text style={[styles.chipText, { color: theme.colors.text }]}>{value}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              ) : null}
+
+              {variantRows.length ? (
+                <View style={styles.variantList}>
+                  {variantRows.map((variant, index) => (
+                    <View key={`${variant.id ?? 'draft'}-${index}`} style={[styles.variantRowCard, { borderColor: theme.colors.border }]}>
+                      <View style={styles.row}>
+                        <View style={styles.half}>
+                          {fieldLabel('Name')}
+                          <TextInput
+                            value={variant.name}
+                            onChangeText={(value) =>
+                              setVariantRows((prev) =>
+                                prev.map((row, rowIndex) => (rowIndex === index ? { ...row, name: value } : row)),
+                              )
+                            }
+                            placeholder="Name"
+                            placeholderTextColor={theme.colors.textMuted}
+                            style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                          />
+                        </View>
+                        <View style={styles.half}>
+                          {fieldLabel('Value')}
+                          <TextInput
+                            value={variant.value}
+                            onChangeText={(value) =>
+                              setVariantRows((prev) =>
+                                prev.map((row, rowIndex) => (rowIndex === index ? { ...row, value } : row)),
+                              )
+                            }
+                            placeholder="Value"
+                            placeholderTextColor={theme.colors.textMuted}
+                            style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                          />
+                        </View>
+                      </View>
+                      <View style={styles.row}>
+                        <View style={styles.half}>
+                          {fieldLabel('Variant Price')}
+                          <TextInput
+                            value={variant.priceDelta}
+                            onChangeText={(value) =>
+                              setVariantRows((prev) =>
+                                prev.map((row, rowIndex) => (rowIndex === index ? { ...row, priceDelta: value } : row)),
+                              )
+                            }
+                            placeholder={f.price || 'Same as base price'}
+                            keyboardType="decimal-pad"
+                            placeholderTextColor={theme.colors.textMuted}
+                            style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                          />
+                        </View>
+                        <View style={styles.half}>
+                          {fieldLabel('Stock')}
+                          <TextInput
+                            value={variant.stockOverride}
+                            onChangeText={(value) =>
+                              setVariantRows((prev) =>
+                                prev.map((row, rowIndex) => (rowIndex === index ? { ...row, stockOverride: value } : row)),
+                              )
+                            }
+                            placeholder="optional"
+                            keyboardType="number-pad"
+                            placeholderTextColor={theme.colors.textMuted}
+                            style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.background }]}
+                          />
+                        </View>
+                        <Pressable
+                          style={[styles.iconBtnLg, { backgroundColor: variant.isActive ? theme.colors.success : theme.colors.surfaceAlt }]}
+                          onPress={() =>
+                            setVariantRows((prev) =>
+                              prev.map((row, rowIndex) => (rowIndex === index ? { ...row, isActive: !row.isActive } : row)),
+                            )
+                          }
+                        >
+                          <Ionicons name={variant.isActive ? 'checkmark' : 'pause'} size={16} color="#FFFFFF" />
+                        </Pressable>
+                        <Pressable
+                          style={[styles.iconBtnLg, { backgroundColor: theme.colors.surfaceAlt }]}
+                          onPress={() => setVariantRows((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
+                        >
+                          <Ionicons name="trash-outline" size={16} color={theme.colors.danger ?? '#EF4444'} />
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={[styles.variantHint, { color: theme.colors.textMuted }]}>No variants yet.</Text>
+              )}
+            </>
           ) : (
-            <Text style={[styles.variantHint, { color: theme.colors.textMuted }]}>No variants yet.</Text>
+            <Text style={[styles.variantHint, { color: theme.colors.textMuted }]}>Collapsed by default. Tap to manage variants.</Text>
           )}
         </View>
 
@@ -808,29 +890,42 @@ export function AdminProductsScreen() {
 
       {/* ─── ADD PRODUCT (top) ─── */}
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Add Product</Text>
-        {renderFormFields(
-          form,
-          setForm,
-          imageUrls,
-          setImageUrls,
-          uploadProgress,
-          setUploadProgress,
-          variants,
-          setVariants,
-          variantDraft,
-          setVariantDraft,
-        )}
-        <View style={styles.row}>
-          <Pressable style={[styles.primaryBtn, { backgroundColor: saving ? theme.colors.surfaceAlt : theme.colors.primary }]} disabled={saving} onPress={submitForm}>
-            <Text style={[styles.primaryBtnText, { color: saving ? theme.colors.textMuted : theme.colors.primaryContrast }]}>
-              {saving ? 'Saving...' : 'Add Product'}
-            </Text>
-          </Pressable>
-          <Pressable style={[styles.outlineBtn, { borderColor: theme.colors.border }]} onPress={resetForm}>
-            <Text style={[styles.outlineBtnText, { color: theme.colors.text }]}>Clear</Text>
-          </Pressable>
-        </View>
+        <Pressable style={styles.collapsibleHeader} onPress={() => setProductFormExpanded((prev) => !prev)}>
+          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Add Product</Text>
+          <Ionicons name={productFormExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textMuted} />
+        </Pressable>
+        {productFormExpanded ? (
+          <>
+            {renderFormFields(
+              form,
+              setForm,
+              imageUrls,
+              setImageUrls,
+              uploadProgress,
+              setUploadProgress,
+              variants,
+              setVariants,
+              variantDraft,
+              setVariantDraft,
+              variantsExpanded,
+              setVariantsExpanded,
+            )}
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.primaryBtn, { backgroundColor: saving ? theme.colors.surfaceAlt : theme.colors.primary }]}
+                disabled={saving}
+                onPress={submitForm}
+              >
+                <Text style={[styles.primaryBtnText, { color: saving ? theme.colors.textMuted : theme.colors.primaryContrast }]}>
+                  {saving ? 'Saving...' : 'Add Product'}
+                </Text>
+              </Pressable>
+              <Pressable style={[styles.outlineBtn, { borderColor: theme.colors.border }]} onPress={resetForm}>
+                <Text style={[styles.outlineBtnText, { color: theme.colors.text }]}>Clear</Text>
+              </Pressable>
+            </View>
+          </>
+        ) : null}
       </View>
 
       {/* ─── CATEGORIES (2-col grid) ─── */}
@@ -893,50 +988,120 @@ export function AdminProductsScreen() {
       </View>
 
       {/* ─── PRODUCT LIST ─── */}
+      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Find Product</Text>
+        <TextInput
+          value={productSearch}
+          onChangeText={setProductSearch}
+          placeholder="Search by product, SKU, or category..."
+          placeholderTextColor={theme.colors.textMuted}
+          style={[styles.searchInput, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+        />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+          <Pressable
+            style={[styles.filterChip, { backgroundColor: categoryFilter === 'all' ? theme.colors.primary : theme.colors.surfaceAlt }]}
+            onPress={() => setCategoryFilter('all')}
+          >
+            <Text style={[styles.filterChipText, { color: categoryFilter === 'all' ? theme.colors.primaryContrast : theme.colors.text }]}>
+              All Categories
+            </Text>
+          </Pressable>
+          {categories.map((category) => {
+            const categoryKey = category.name.toLowerCase();
+            const active = categoryFilter === categoryKey;
+            return (
+              <Pressable
+                key={category.id}
+                style={[styles.filterChip, { backgroundColor: active ? theme.colors.primary : theme.colors.surfaceAlt }]}
+                onPress={() => setCategoryFilter(categoryKey)}
+              >
+                <Text style={[styles.filterChipText, { color: active ? theme.colors.primaryContrast : theme.colors.text }]}>
+                  {category.name}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+          {STOCK_SORT_OPTIONS.map((option) => {
+            const active = stockSort === option.id;
+            return (
+              <Pressable
+                key={option.id}
+                style={[styles.filterChip, { backgroundColor: active ? theme.colors.primary : theme.colors.surfaceAlt }]}
+                onPress={() => setStockSort(option.id)}
+              >
+                <Text style={[styles.filterChipText, { color: active ? theme.colors.primaryContrast : theme.colors.text }]}>
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
       {showLoader ? <BrandedLoader compact label="Loading inventory..." /> : null}
-      {!loading && !products.length ? <EmptyState title="No products" subtitle="Add your first product above." /> : null}
+      {!loading && !filteredProducts.length ? (
+        <EmptyState
+          title="No products found"
+          subtitle={products.length ? 'Try another search keyword or category filter.' : 'Add your first product above.'}
+        />
+      ) : null}
 
       <View style={styles.list}>
-        {products.map((product) => (
-          <View key={product.id} style={[styles.prodCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <View style={styles.prodRow}>
-              {product.imageUrl ? (
-                <Image source={{ uri: product.imageUrl }} style={styles.prodThumb} />
-              ) : (
-                <View style={[styles.prodThumbFallback, { backgroundColor: theme.colors.surfaceAlt }]}>
-                  <Ionicons name="basket-outline" size={18} color={theme.colors.textMuted} />
-                </View>
-              )}
-              <View style={styles.prodInfo}>
-                <Text style={[styles.prodName, { color: theme.colors.text }]} numberOfLines={1}>{product.name}</Text>
-                <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>{product.categoryName} | {product.unit}</Text>
-                <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>Cost: {formatPHP(product.cost)} | Price: {formatPHP(product.price)}</Text>
-                {product.onSale && product.salePrice !== undefined ? (
-                  <Text style={[styles.prodMeta, { color: theme.colors.primary }]}>
-                    On Sale: {formatPHP(product.salePrice)} ({getDiscountPercentFromPrice(product.price, product.salePrice, product.onSale)}% off)
+        {filteredProducts.map((product) => {
+          const lowVariantLabels = getLowVariantLabels(product);
+          const hasLowVariantStock = lowVariantLabels.length > 0;
+          const displayStock = getEffectiveStockForSort(product);
+          const isOutOfStock = displayStock <= 0;
+          const isLowStock = displayStock <= product.minStock;
+
+          return (
+            <View key={product.id} style={[styles.prodCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+              <View style={styles.prodRow}>
+                {product.imageUrl ? (
+                  <Image source={{ uri: product.imageUrl }} style={styles.prodThumb} />
+                ) : (
+                  <View style={[styles.prodThumbFallback, { backgroundColor: theme.colors.surfaceAlt }]}>
+                    <Ionicons name="basket-outline" size={18} color={theme.colors.textMuted} />
+                  </View>
+                )}
+                <View style={styles.prodInfo}>
+                  <Text style={[styles.prodName, { color: theme.colors.text }]} numberOfLines={1}>{product.name}</Text>
+                  <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>{product.categoryName} | {product.unit}</Text>
+                  <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>Cost: {formatPHP(product.cost)} | Price: {formatPHP(product.price)}</Text>
+                  {product.onSale && product.salePrice !== undefined ? (
+                    <Text style={[styles.prodMeta, { color: theme.colors.primary }]}>
+                      On Sale: {formatPHP(product.salePrice)} ({getDiscountPercentFromPrice(product.price, product.salePrice, product.onSale)}% off)
+                    </Text>
+                  ) : null}
+                  <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>Variants: {(product.variants ?? []).filter((item) => item.isActive).length}</Text>
+                  <Text style={[styles.stockText, { color: isOutOfStock ? theme.colors.danger : isLowStock ? theme.colors.warning : theme.colors.success }]}>
+                    Stock: {displayStock}
                   </Text>
-                ) : null}
-                <Text style={[styles.prodMeta, { color: theme.colors.textMuted }]}>Variants: {(product.variants ?? []).filter((item) => item.isActive).length}</Text>
-                <Text style={[styles.stockText, { color: product.stock <= 0 ? theme.colors.danger : product.stock <= product.minStock ? theme.colors.warning : theme.colors.success }]}>
-                  Stock: {product.stock}
-                </Text>
+                  {hasLowVariantStock ? (
+                    <Text style={[styles.variantLowText, { color: theme.colors.warning }]}>
+                      Variant low stock: {lowVariantLabels.slice(0, 2).join(', ')}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+              <View style={styles.prodActions}>
+                <Pressable style={[styles.actionBtn, { borderColor: theme.colors.border }]} onPress={() => openEditModal(product)}>
+                  <Ionicons name="pencil-outline" size={13} color={theme.colors.text} />
+                  <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Edit</Text>
+                </Pressable>
+                <Pressable style={[styles.actionBtn, { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent }]} onPress={() => restockProduct(product)}>
+                  <Ionicons name="add-circle-outline" size={13} color="#FFF" />
+                  <Text style={[styles.actionBtnText, { color: '#FFF' }]}>+10</Text>
+                </Pressable>
+                <Pressable style={[styles.actionBtn, { borderColor: theme.colors.danger ?? '#EF4444' }]} onPress={() => handleDeleteProduct(product)}>
+                  <Ionicons name="trash-outline" size={13} color={theme.colors.danger ?? '#EF4444'} />
+                </Pressable>
               </View>
             </View>
-            <View style={styles.prodActions}>
-              <Pressable style={[styles.actionBtn, { borderColor: theme.colors.border }]} onPress={() => openEditModal(product)}>
-                <Ionicons name="pencil-outline" size={13} color={theme.colors.text} />
-                <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Edit</Text>
-              </Pressable>
-              <Pressable style={[styles.actionBtn, { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent }]} onPress={() => restockProduct(product)}>
-                <Ionicons name="add-circle-outline" size={13} color="#FFF" />
-                <Text style={[styles.actionBtnText, { color: '#FFF' }]}>+10</Text>
-              </Pressable>
-              <Pressable style={[styles.actionBtn, { borderColor: theme.colors.danger ?? '#EF4444' }]} onPress={() => handleDeleteProduct(product)}>
-                <Ionicons name="trash-outline" size={13} color={theme.colors.danger ?? '#EF4444'} />
-              </Pressable>
-            </View>
-          </View>
-        ))}
+          );
+        })}
       </View>
 
       {products.length > 0 || page > 1 ? (
@@ -997,6 +1162,8 @@ export function AdminProductsScreen() {
                 setEditVariants,
                 editVariantDraft,
                 setEditVariantDraft,
+                editVariantsExpanded,
+                setEditVariantsExpanded,
               )}
             </ScrollView>
             <View style={[styles.modalFooter, { borderTopColor: theme.colors.border }]}>
@@ -1023,6 +1190,11 @@ const styles = StyleSheet.create({
   content: { gap: 10, padding: 14 },
   card: { borderRadius: 14, borderWidth: 1, padding: 12, rowGap: 8 },
   cardTitle: { fontSize: 16, fontWeight: '800' },
+  collapsibleHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  searchInput: { borderRadius: 10, borderWidth: 1, fontSize: 13, paddingHorizontal: 10, paddingVertical: 9 },
+  filterRow: { gap: 6, paddingBottom: 2 },
+  filterChip: { borderRadius: 999, paddingHorizontal: 11, paddingVertical: 7 },
+  filterChipText: { fontSize: 11, fontWeight: '700' },
   fieldLabel: { fontSize: 11, fontWeight: '700', marginBottom: 4 },
   input: { borderRadius: 10, borderWidth: 1, fontSize: 13, paddingHorizontal: 10, paddingVertical: 9 },
   readonlyField: { justifyContent: 'center' },
@@ -1078,6 +1250,7 @@ const styles = StyleSheet.create({
   prodName: { fontSize: 13, fontWeight: '800' },
   prodMeta: { fontSize: 11, fontWeight: '500' },
   stockText: { fontSize: 11, fontWeight: '800' },
+  variantLowText: { fontSize: 10, fontWeight: '700', marginTop: 2 },
   prodActions: { flexDirection: 'row', gap: 6 },
   actionBtn: { alignItems: 'center', borderRadius: 8, borderWidth: 1, flexDirection: 'row', gap: 4, paddingHorizontal: 8, paddingVertical: 5 },
   actionBtnText: { fontSize: 11, fontWeight: '700' },

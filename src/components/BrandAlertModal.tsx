@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { useTheme } from '../providers/ThemeProvider';
 import { BrandAlertConfig } from '../hooks/useBrandAlert';
+import { useTheme } from '../providers/ThemeProvider';
+import { ModalBackdrop } from './ModalBackdrop';
 
 interface BrandAlertModalProps {
   config: BrandAlertConfig;
@@ -36,19 +37,12 @@ export function BrandAlertModal({ config, onClose, onConfirm }: BrandAlertModalP
 
   return (
     <Modal visible={config.visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
-      <View style={styles.backdrop}>{content}</View>
+      <ModalBackdrop overlayOpacity={0.42}>{content}</ModalBackdrop>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    alignItems: 'center',
-    backgroundColor: '#00000066',
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 18,
-  },
   card: {
     borderRadius: 18,
     borderWidth: 1,

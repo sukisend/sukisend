@@ -371,7 +371,7 @@ export async function fetchProductById(productId: string): Promise<Product | nul
 
 export async function fetchShippingMethods(): Promise<ShippingMethod[]> {
   if (!supabase) {
-    return [{ id: 'ship-rider', name: 'Suki Send Rider', baseFee: 35, etaMinDays: 0, etaMaxDays: 1, isActive: true }];
+    return [];
   }
 
   const { data, error } = await supabase

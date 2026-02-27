@@ -5,12 +5,10 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
-import { BrandedLoader } from '../../components/BrandedLoader';
 import { EmptyState } from '../../components/EmptyState';
 import { ProductCard } from '../../components/ProductCard';
 import { SectionHeader } from '../../components/SectionHeader';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
-import { useMinimumLoader } from '../../hooks/useMinimumLoader';
 import { CustomerStackParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
@@ -49,7 +47,6 @@ export function ExploreScreen() {
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
-  const showLoader = useMinimumLoader(loading, 6000);
 
   useEffect(() => {
     fetchPublicCategories()
@@ -217,8 +214,6 @@ export function ExploreScreen() {
             );
           })}
         </ScrollView>
-
-        {showLoader ? <BrandedLoader compact label="Loading products..." /> : null}
 
         <View style={styles.productsList}>
           {products.map((item) => (

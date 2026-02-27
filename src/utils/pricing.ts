@@ -29,7 +29,25 @@ export function getProductBasePrice(product: Product): number {
 }
 
 export function getVariantUnitPrice(product: Product, variant?: ProductVariant): number {
-  return Number((getProductBasePrice(product) + Number(variant?.priceDelta ?? 0)).toFixed(2));
+  const basePrice = Number(product.price);
+  const delta = Number(variant?.priceDelta ?? 0);
+  const regularVariantPrice = Number.isFinite(basePrice + delta) ? basePrice + delta : basePrice;
+
+  const salePrice = toFiniteNumber(product.salePrice);
+  const hasDiscount =
+    Boolean(product.onSale) &&
+    salePrice !== null &&
+    Number.isFinite(basePrice) &&
+    basePrice > 0 &&
+    salePrice >= 0 &&
+    salePrice < basePrice;
+
+  if (!hasDiscount || salePrice === null) {
+    return Number(Math.max(0, regularVariantPrice).toFixed(2));
+  }
+
+  const discountFactor = salePrice / basePrice;
+  return Number(Math.max(0, regularVariantPrice * discountFactor).toFixed(2));
 }
 
 export function getDiscountPercentFromPrice(price: number, salePrice?: number, onSale?: boolean): number {

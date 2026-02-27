@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -26,6 +26,7 @@ export function ProductDetailScreen() {
   const addItem = useCartStore((state) => state.addItem);
   const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const screenWidth = Dimensions.get('window').width;
+  const galleryRef = useRef<ScrollView | null>(null);
 
   const [product, setProduct] = useState<Product>(route.params.product);
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
@@ -34,6 +35,7 @@ export function ProductDetailScreen() {
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewImages, setPreviewImages] = useState<string[]>([]);
   const [previewIndex, setPreviewIndex] = useState(0);
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
 
   useEffect(() => {
     fetchProductById(route.params.product.id)
@@ -52,6 +54,28 @@ export function ProductDetailScreen() {
       .then(setReviews)
       .catch(() => setReviews([]));
   }, [route.params.product.id]);
+
+  useEffect(() => {
+    setActiveImageIndex(0);
+  }, [product.id, product.images?.length, product.imageUrl]);
+
+  const totalImages = product.images?.length ? product.images.length : product.imageUrl ? 1 : 0;
+
+  useEffect(() => {
+    if (totalImages <= 1) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setActiveImageIndex((prev) => {
+        const next = (prev + 1) % totalImages;
+        galleryRef.current?.scrollTo({ x: next * (screenWidth - 28), animated: true });
+        return next;
+      });
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [screenWidth, totalImages]);
 
   const activeVariants = useMemo(
     () => (product.variants ?? []).filter((item) => item.isActive),
@@ -107,11 +131,18 @@ export function ProductDetailScreen() {
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
     >
       <ScrollView
+        ref={(instance) => {
+          galleryRef.current = instance;
+        }}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
         style={styles.gallery}
         contentContainerStyle={styles.galleryContent}
+        onMomentumScrollEnd={(event) => {
+          const nextIndex = Math.round(event.nativeEvent.contentOffset.x / (screenWidth - 28));
+          setActiveImageIndex(Math.max(0, Math.min(nextIndex, Math.max(0, images.length - 1))));
+        }}
       >
         {images.length ? (
           images.map((image, index) => (
@@ -129,6 +160,51 @@ export function ProductDetailScreen() {
           </View>
         )}
       </ScrollView>
+      {images.length > 1 ? (
+        <View style={styles.galleryControls}>
+          <Pressable
+            style={[styles.galleryNavBtn, activeImageIndex === 0 ? styles.galleryNavDisabled : null]}
+            disabled={activeImageIndex === 0}
+            onPress={() => {
+              const next = Math.max(0, activeImageIndex - 1);
+              setActiveImageIndex(next);
+              galleryRef.current?.scrollTo({ x: next * (screenWidth - 28), animated: true });
+            }}
+          >
+            <Ionicons name="chevron-back" size={15} color={theme.colors.text} />
+            <Text style={[styles.galleryNavText, { color: theme.colors.text }]}>Prev</Text>
+          </Pressable>
+          <View style={styles.galleryDots}>
+            {images.map((image, index) => (
+              <Pressable
+                key={image.id}
+                style={[
+                  styles.galleryDot,
+                  {
+                    backgroundColor: index === activeImageIndex ? theme.colors.primary : theme.colors.border,
+                  },
+                ]}
+                onPress={() => {
+                  setActiveImageIndex(index);
+                  galleryRef.current?.scrollTo({ x: index * (screenWidth - 28), animated: true });
+                }}
+              />
+            ))}
+          </View>
+          <Pressable
+            style={[styles.galleryNavBtn, activeImageIndex >= images.length - 1 ? styles.galleryNavDisabled : null]}
+            disabled={activeImageIndex >= images.length - 1}
+            onPress={() => {
+              const next = Math.min(images.length - 1, activeImageIndex + 1);
+              setActiveImageIndex(next);
+              galleryRef.current?.scrollTo({ x: next * (screenWidth - 28), animated: true });
+            }}
+          >
+            <Text style={[styles.galleryNavText, { color: theme.colors.text }]}>Next</Text>
+            <Ionicons name="chevron-forward" size={15} color={theme.colors.text} />
+          </Pressable>
+        </View>
+      ) : null}
 
       <Text style={[styles.title, { color: theme.colors.text }]}>{product.name}</Text>
       <Text style={[styles.price, { color: theme.colors.primary }]}>{formatPHP(effectivePrice)}</Text>
@@ -149,6 +225,24 @@ export function ProductDetailScreen() {
         <View style={styles.variantWrap}>
           <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Choose variant</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.variantRow}>
+            <Pressable
+              style={[
+                styles.variantChip,
+                {
+                  backgroundColor: selectedVariantId === null ? theme.colors.primary : theme.colors.surfaceAlt,
+                },
+              ]}
+              onPress={() => setSelectedVariantId(null)}
+            >
+              <Text
+                style={[
+                  styles.variantText,
+                  { color: selectedVariantId === null ? theme.colors.primaryContrast : theme.colors.text },
+                ]}
+              >
+                {product.name} ({formatPHP(getVariantUnitPrice(product))})
+              </Text>
+            </Pressable>
             {activeVariants.map((variant) => {
               const active = variant.id === selectedVariantId;
               return (
@@ -267,6 +361,39 @@ const styles = StyleSheet.create({
     height: 286,
     justifyContent: 'center',
     overflow: 'hidden',
+  },
+  galleryControls: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  galleryNavBtn: {
+    alignItems: 'center',
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 4,
+    minWidth: 72,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  galleryNavDisabled: {
+    opacity: 0.45,
+  },
+  galleryNavText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  galleryDots: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+  },
+  galleryDot: {
+    borderRadius: 999,
+    height: 7,
+    width: 22,
   },
   image: {
     height: '100%',

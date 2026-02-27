@@ -1189,19 +1189,6 @@ where o.payment_status = 'paid'
 group by 1
 order by 1 desc;
 
-insert into public.shipping_methods (name, description, base_fee, eta_min_days, eta_max_days, is_active)
-values
-  ('J&T Express', 'Standard parcel shipping', 90, 1, 3, true),
-  ('LBC Express', 'Nationwide courier service', 120, 2, 5, true),
-  ('Suki Send Rider', 'Store-managed same day delivery', 35, 0, 1, true)
-on conflict (name) do update
-set
-  description = excluded.description,
-  base_fee = excluded.base_fee,
-  eta_min_days = excluded.eta_min_days,
-  eta_max_days = excluded.eta_max_days,
-  is_active = excluded.is_active;
-
 insert into public.app_settings (setting_key, setting_value, description)
 values
   ('delivery_rate_per_km', '20', 'Distance fee rate per kilometer for rider checkout.')
@@ -1641,6 +1628,20 @@ set
   file_size_limit = excluded.file_size_limit,
   allowed_mime_types = excluded.allowed_mime_types;
 
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'chat-media',
+  'chat-media',
+  true,
+  10485760,
+  array['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm']
+)
+on conflict (id) do update
+set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
 drop policy if exists "product_media_public_read" on storage.objects;
 create policy "product_media_public_read"
 on storage.objects
@@ -1680,6 +1681,33 @@ for delete
 to authenticated
 using (
   bucket_id = 'review-media'
+  and (owner = auth.uid() or public.is_admin(auth.uid()))
+);
+
+drop policy if exists "chat_media_public_read" on storage.objects;
+create policy "chat_media_public_read"
+on storage.objects
+for select
+to anon, authenticated
+using (bucket_id = 'chat-media');
+
+drop policy if exists "chat_media_owner_upload" on storage.objects;
+create policy "chat_media_owner_upload"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'chat-media'
+  and owner = auth.uid()
+);
+
+drop policy if exists "chat_media_owner_delete" on storage.objects;
+create policy "chat_media_owner_delete"
+on storage.objects
+for delete
+to authenticated
+using (
+  bucket_id = 'chat-media'
   and (owner = auth.uid() or public.is_admin(auth.uid()))
 );
 
@@ -2104,6 +2132,108 @@ as $$
   order by p.created_at desc;
 $$;
 
+create or replace function public.admin_list_customers_paginated(
+  p_page integer default 1,
+  p_page_size integer default 20,
+  p_search text default null
+)
+returns table (
+  customer_id uuid,
+  full_name text,
+  email text,
+  created_at timestamptz,
+  total_orders bigint,
+  pending_orders bigint,
+  active_restriction_id uuid,
+  active_restriction_reason text,
+  active_restriction_severity text,
+  active_restriction_starts_at timestamptz,
+  active_restriction_ends_at timestamptz,
+  total_count bigint
+)
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$
+  with normalized as (
+    select
+      greatest(coalesce(p_page, 1), 1) as page_no,
+      greatest(coalesce(p_page_size, 20), 1) as page_size,
+      nullif(btrim(coalesce(p_search, '')), '') as search_term
+  ),
+  filtered as (
+    select
+      p.id as customer_id,
+      p.full_name,
+      coalesce(u.email, '') as email,
+      p.created_at,
+      coalesce(order_stats.total_orders, 0) as total_orders,
+      coalesce(order_stats.pending_orders, 0) as pending_orders,
+      active.id as active_restriction_id,
+      active.reason as active_restriction_reason,
+      active.severity as active_restriction_severity,
+      active.starts_at as active_restriction_starts_at,
+      active.ends_at as active_restriction_ends_at
+    from public.profiles p
+    left join auth.users u
+      on u.id = p.id
+    left join lateral (
+      select
+        count(*)::bigint as total_orders,
+        count(*) filter (where o.status in ('pending', 'approved', 'shipped', 'out_for_delivery'))::bigint as pending_orders
+      from public.orders o
+      where o.customer_id = p.id
+    ) order_stats on true
+    left join lateral (
+      select r.id, r.reason, r.severity, r.starts_at, r.ends_at
+      from public.customer_restrictions r
+      where r.customer_id = p.id
+        and r.is_active = true
+        and r.starts_at <= now()
+        and (r.ends_at is null or r.ends_at > now())
+      order by
+        case r.severity
+          when 'banned' then 3
+          when 'restricted' then 2
+          else 1
+        end desc,
+        r.created_at desc
+      limit 1
+    ) active on true
+    cross join normalized n
+    where p.role = 'customer'
+      and (
+        n.search_term is null
+        or p.full_name ilike '%' || n.search_term || '%'
+        or coalesce(u.email, '') ilike '%' || n.search_term || '%'
+        or p.id::text ilike '%' || n.search_term || '%'
+      )
+  ),
+  counted as (
+    select count(*)::bigint as total_count
+    from filtered
+  )
+  select
+    f.customer_id,
+    f.full_name,
+    f.email,
+    f.created_at,
+    f.total_orders,
+    f.pending_orders,
+    f.active_restriction_id,
+    f.active_restriction_reason,
+    f.active_restriction_severity,
+    f.active_restriction_starts_at,
+    f.active_restriction_ends_at,
+    c.total_count
+  from filtered f
+  cross join counted c
+  order by f.created_at desc
+  limit (select page_size from normalized)
+  offset ((select page_no from normalized) - 1) * (select page_size from normalized);
+$$;
+
 create or replace function public.admin_list_seller_threads()
 returns table (
   thread_id uuid,
@@ -2149,6 +2279,90 @@ as $$
       and m.is_read = false
   ) unread on true
   order by t.last_message_at desc, t.created_at desc;
+$$;
+
+create or replace function public.admin_list_seller_threads_paginated(
+  p_page integer default 1,
+  p_page_size integer default 20,
+  p_search text default null
+)
+returns table (
+  thread_id uuid,
+  customer_id uuid,
+  customer_name text,
+  customer_email text,
+  last_message_at timestamptz,
+  last_message text,
+  unread_count bigint,
+  is_closed boolean,
+  total_count bigint
+)
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$
+  with normalized as (
+    select
+      greatest(coalesce(p_page, 1), 1) as page_no,
+      greatest(coalesce(p_page_size, 20), 1) as page_size,
+      nullif(btrim(coalesce(p_search, '')), '') as search_term
+  ),
+  filtered as (
+    select
+      t.id as thread_id,
+      t.customer_id,
+      coalesce(p.full_name, 'Customer') as customer_name,
+      coalesce(u.email, '') as customer_email,
+      t.last_message_at,
+      latest.message as last_message,
+      coalesce(unread.unread_count, 0)::bigint as unread_count,
+      t.is_closed
+    from public.seller_chat_threads t
+    join public.profiles p
+      on p.id = t.customer_id
+    left join auth.users u
+      on u.id = t.customer_id
+    left join lateral (
+      select m.message
+      from public.seller_chat_messages m
+      where m.thread_id = t.id
+      order by m.created_at desc
+      limit 1
+    ) latest on true
+    left join lateral (
+      select count(*)::bigint as unread_count
+      from public.seller_chat_messages m
+      where m.thread_id = t.id
+        and m.sender_role = 'customer'
+        and m.is_read = false
+    ) unread on true
+    cross join normalized n
+    where
+      n.search_term is null
+      or p.full_name ilike '%' || n.search_term || '%'
+      or coalesce(u.email, '') ilike '%' || n.search_term || '%'
+  ),
+  counted as (
+    select count(*)::bigint as total_count
+    from filtered
+  )
+  select
+    f.thread_id,
+    f.customer_id,
+    f.customer_name,
+    f.customer_email,
+    f.last_message_at,
+    f.last_message,
+    f.unread_count,
+    f.is_closed,
+    c.total_count
+  from filtered f
+  cross join counted c
+  cross join normalized n
+  order by f.last_message_at desc
+  limit (select page_size from normalized)
+  offset ((select page_no from normalized) - 1) * (select page_size from normalized);
 $$;
 
 create or replace function public.admin_lift_customer_restriction(
@@ -2367,7 +2581,9 @@ grant execute on function public.admin_set_customer_restriction(uuid, text, inte
 grant execute on function public.admin_lift_customer_restriction(uuid, text) to authenticated;
 grant execute on function public.admin_delete_customer_account(uuid, text) to authenticated;
 grant execute on function public.admin_list_customers() to authenticated;
+grant execute on function public.admin_list_customers_paginated(integer, integer, text) to authenticated;
 grant execute on function public.admin_list_seller_threads() to authenticated;
+grant execute on function public.admin_list_seller_threads_paginated(integer, integer, text) to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Rider role + live tracking

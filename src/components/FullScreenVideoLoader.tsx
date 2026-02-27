@@ -1,6 +1,7 @@
-import { ResizeMode, Video } from 'expo-av';
 import { Modal, StyleSheet, Text, View } from 'react-native';
 
+import { AppVideo } from './AppVideo';
+import { ModalBackdrop } from './ModalBackdrop';
 import { useTheme } from '../providers/ThemeProvider';
 
 interface FullScreenVideoLoaderProps {
@@ -17,45 +18,41 @@ export function FullScreenVideoLoader({
   const { theme } = useTheme();
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.backdrop}>
+    <Modal visible={visible} transparent animationType="fade" statusBarTranslucent>
+      <ModalBackdrop>
         <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-          <View style={styles.videoWrap}>
-            <Video
+          <View style={[styles.videoWrap, { backgroundColor: theme.colors.surfaceAlt }]}>
+            <AppVideo
               source={require('../../loading animation/loadingspinner.mp4')}
               style={styles.video}
-              shouldPlay
-              isLooping
-              isMuted
-              resizeMode={ResizeMode.CONTAIN}
+              contentFit="contain"
+              loop
+              muted
+              paused={!visible}
             />
           </View>
           <Text style={[styles.title, { color: theme.colors.text }]}>{label}</Text>
           <Text style={[styles.sub, { color: theme.colors.textMuted }]}>{message}</Text>
         </View>
-      </View>
+      </ModalBackdrop>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    alignItems: 'center',
-    backgroundColor: 'rgba(2, 6, 23, 0.7)',
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 18,
-  },
   card: {
     borderRadius: 18,
     borderWidth: 1,
+    maxWidth: 360,
     paddingHorizontal: 14,
     paddingVertical: 14,
     width: '100%',
   },
   videoWrap: {
+    alignSelf: 'center',
+    backgroundColor: '#020617',
     borderRadius: 14,
-    height: 260,
+    minHeight: 212,
     overflow: 'hidden',
     width: '100%',
   },

@@ -124,10 +124,30 @@ export function AdminReportsScreen() {
       {snapshot ? (
         <>
           <View style={styles.metricsGrid}>
-            <MetricCard label="Gross Sales" value={formatPHP(snapshot.metrics.grossSales)} />
-            <MetricCard label="Paid Orders" value={`${snapshot.metrics.totalOrders}`} />
-            <MetricCard label="Profit" value={formatPHP(snapshot.metrics.profit)} />
-            <MetricCard label="Top Product" value={snapshot.metrics.topSellingProduct} />
+            <MetricCard
+              label="Gross Sales"
+              value={formatPHP(snapshot.metrics.grossSales)}
+              accentColor="#22C55E"
+              tintColor={theme.isDark ? 'rgba(34, 197, 94, 0.16)' : 'rgba(34, 197, 94, 0.11)'}
+            />
+            <MetricCard
+              label="Paid Orders"
+              value={`${snapshot.metrics.totalOrders}`}
+              accentColor="#3B82F6"
+              tintColor={theme.isDark ? 'rgba(59, 130, 246, 0.15)' : 'rgba(59, 130, 246, 0.1)'}
+            />
+            <MetricCard
+              label="Profit"
+              value={formatPHP(snapshot.metrics.profit)}
+              accentColor="#14B8A6"
+              tintColor={theme.isDark ? 'rgba(20, 184, 166, 0.16)' : 'rgba(20, 184, 166, 0.1)'}
+            />
+            <MetricCard
+              label="Top Product"
+              value={snapshot.metrics.topSellingProduct}
+              accentColor="#F97316"
+              tintColor={theme.isDark ? 'rgba(249, 115, 22, 0.16)' : 'rgba(249, 115, 22, 0.11)'}
+            />
           </View>
 
           <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
@@ -171,7 +191,10 @@ export function AdminReportsScreen() {
             <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Category Breakdown</Text>
             {snapshot.categorySales.length ? (
               snapshot.categorySales.map((entry) => (
-                <View key={entry.category} style={styles.entryRow}>
+                <View
+                  key={entry.category}
+                  style={[styles.entryRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                >
                   <Text style={[styles.entryLabel, { color: theme.colors.text }]}>{entry.category}</Text>
                   <Text style={[styles.entryValue, { color: theme.colors.primary }]}>{formatPHP(entry.sales)}</Text>
                 </View>
@@ -256,8 +279,12 @@ const styles = StyleSheet.create({
   },
   entryRow: {
     alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   entryLabel: {
     fontSize: 13,

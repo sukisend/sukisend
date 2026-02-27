@@ -1,14 +1,41 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef } from 'react';
+import { Animated, Easing, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme } from '../providers/ThemeProvider';
 
 interface ThemeModeToggleProps {
   compact?: boolean;
+  showLabel?: boolean;
 }
 
-export function ThemeModeToggle({ compact = false }: ThemeModeToggleProps) {
+const TRACK_WIDTH = 46;
+const TRACK_HEIGHT = 24;
+const THUMB_SIZE = 20;
+const THUMB_TRAVEL = TRACK_WIDTH - THUMB_SIZE - 4;
+
+export function ThemeModeToggle({ compact = false, showLabel = true }: ThemeModeToggleProps) {
   const { theme, mode, toggleTheme } = useTheme();
   const isDark = mode === 'dark';
+  const progress = useRef(new Animated.Value(isDark ? 1 : 0)).current;
+  const useNativeDriver = Platform.OS !== 'web';
+
+  useEffect(() => {
+    Animated.timing(progress, {
+      toValue: isDark ? 1 : 0,
+      duration: 170,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver,
+    }).start();
+  }, [isDark, progress, useNativeDriver]);
+
+  const translateX = useMemo(
+    () =>
+      progress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, THUMB_TRAVEL],
+      }),
+    [progress],
+  );
 
   return (
     <Pressable
@@ -16,13 +43,32 @@ export function ThemeModeToggle({ compact = false }: ThemeModeToggleProps) {
       style={[
         styles.wrapper,
         compact ? styles.wrapperCompact : null,
-        { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt },
+        {
+          borderColor: theme.colors.border,
+          backgroundColor: theme.isDark ? '#0B1220' : '#E2E8F0',
+        },
       ]}
     >
-      <View style={[styles.track, { backgroundColor: isDark ? '#111111' : '#D4D4D4' }]}>
-        <View style={[styles.thumb, isDark ? styles.thumbRight : styles.thumbLeft, { backgroundColor: '#FFFFFF' }]} />
+      <View
+        style={[
+          styles.track,
+          {
+            backgroundColor: isDark ? '#111827' : '#CBD5E1',
+            borderColor: isDark ? '#1F2937' : '#94A3B8',
+          },
+        ]}
+      >
+        <Animated.View
+          style={[
+            styles.thumb,
+            {
+              backgroundColor: '#FFFFFF',
+              transform: [{ translateX }],
+            },
+          ]}
+        />
       </View>
-      <Text style={[styles.label, { color: theme.colors.text }]}>{isDark ? 'Dark Mode' : 'Light Mode'}</Text>
+      {showLabel ? <Text style={[styles.label, { color: theme.colors.text }]}>{isDark ? 'Dark' : 'Light'}</Text> : null}
     </Pressable>
   );
 }
@@ -30,37 +76,34 @@ export function ThemeModeToggle({ compact = false }: ThemeModeToggleProps) {
 const styles = StyleSheet.create({
   wrapper: {
     alignItems: 'center',
-    borderRadius: 14,
+    borderRadius: 999,
     borderWidth: 1,
-    minWidth: 120,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  wrapperCompact: {
-    minWidth: 106,
+    minWidth: 82,
     paddingHorizontal: 8,
     paddingVertical: 6,
   },
+  wrapperCompact: {
+    minWidth: 76,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+  },
   track: {
+    borderWidth: 1,
     borderRadius: 999,
-    height: 28,
-    width: 62,
+    height: TRACK_HEIGHT,
+    width: TRACK_WIDTH,
   },
   thumb: {
     borderRadius: 999,
-    height: 24,
-    marginTop: 2,
-    width: 24,
-  },
-  thumbLeft: {
-    marginLeft: 2,
-  },
-  thumbRight: {
-    marginLeft: 36,
+    height: THUMB_SIZE,
+    left: 2,
+    position: 'absolute',
+    top: 1,
+    width: THUMB_SIZE,
   },
   label: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
-    marginTop: 5,
+    marginTop: 4,
   },
 });

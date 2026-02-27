@@ -1,22 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { useNavigation } from '@react-navigation/native';
+import { useEffect, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
-import { ThemeModeToggle } from '../../components/ThemeModeToggle';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
+import { AdminTabsParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 import {
   adminDeleteCustomerAccount,
   adminLiftCustomerRestriction,
   adminSetCustomerRestriction,
-  fetchAdminCustomers,
-  fetchAdminSellerThreads,
-  fetchSellerChatMessages,
-  markSellerChatThreadRead,
-  sendSellerChatMessage,
+  fetchAdminCustomersPage,
 } from '../../services/chatModerationService';
-import { CustomerModerationUser, RestrictionSeverity, SellerChatMessage, SellerChatThread } from '../../types/models';
+import { CustomerModerationUser, RestrictionSeverity } from '../../types/models';
 import { formatDateTime } from '../../utils/date';
 
 const SEVERITY_LABEL: Record<RestrictionSeverity, string> = {
@@ -24,78 +22,41 @@ const SEVERITY_LABEL: Record<RestrictionSeverity, string> = {
   restricted: 'Restricted',
   banned: 'Banned',
 };
+const CUSTOMER_PAGE_SIZE = 8;
 
 export function AdminAccountScreen() {
+  const navigation = useNavigation<BottomTabNavigationProp<AdminTabsParamList>>();
   const { theme } = useTheme();
   const { profile, signOut } = useAuth();
   const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const [loading, setLoading] = useState(false);
   const [customers, setCustomers] = useState<CustomerModerationUser[]>([]);
-  const [threads, setThreads] = useState<SellerChatThread[]>([]);
   const [search, setSearch] = useState('');
-  const [chatModalVisible, setChatModalVisible] = useState(false);
-  const [activeThread, setActiveThread] = useState<SellerChatThread | null>(null);
-  const [threadMessages, setThreadMessages] = useState<SellerChatMessage[]>([]);
-  const [chatDraft, setChatDraft] = useState('');
-  const [sendingChat, setSendingChat] = useState(false);
+  const [customerPage, setCustomerPage] = useState(1);
+  const [customerTotal, setCustomerTotal] = useState(0);
+  const customerPageCount = Math.max(1, Math.ceil(customerTotal / CUSTOMER_PAGE_SIZE));
 
-  const filteredCustomers = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) {
-      return customers;
-    }
-    return customers.filter(
-      (item) =>
-        item.fullName.toLowerCase().includes(keyword) ||
-        item.email.toLowerCase().includes(keyword) ||
-        item.id.toLowerCase().includes(keyword),
-    );
-  }, [customers, search]);
-
-  const loadData = async () => {
+  const loadCustomers = async (page = customerPage, keyword = search) => {
     setLoading(true);
     try {
-      const [nextCustomers, nextThreads] = await Promise.all([fetchAdminCustomers(), fetchAdminSellerThreads()]);
-      setCustomers(nextCustomers);
-      setThreads(nextThreads);
+      const result = await fetchAdminCustomersPage({
+        page,
+        pageSize: CUSTOMER_PAGE_SIZE,
+        search: keyword,
+      });
+      setCustomers(result.rows);
+      setCustomerTotal(result.total);
     } catch {
       setCustomers([]);
-      setThreads([]);
+      setCustomerTotal(0);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
-
-  useEffect(() => {
-    if (!activeThread) {
-      return;
-    }
-
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const nextMessages = await fetchSellerChatMessages(activeThread.id);
-        if (!cancelled) {
-          setThreadMessages(nextMessages);
-          await markSellerChatThreadRead(activeThread.id);
-          await loadData();
-        }
-      } catch {
-        // keep previous snapshot on polling failure
-      }
-    };
-
-    poll();
-    const timer = setInterval(poll, 4000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [activeThread]);
+    loadCustomers(customerPage, search);
+  }, [customerPage, search]);
 
   const applyRestriction = async (customer: CustomerModerationUser, severity: RestrictionSeverity) => {
     const durationHours = severity === 'warning' ? 24 : severity === 'restricted' ? 72 : undefined;
@@ -113,7 +74,7 @@ export function AdminAccountScreen() {
         severity,
         durationHours,
       });
-      await loadData();
+      await loadCustomers();
       showAlert({
         title: `${SEVERITY_LABEL[severity]} applied`,
         message: `${customer.fullName} has been updated.`,
@@ -135,7 +96,7 @@ export function AdminAccountScreen() {
 
     try {
       await adminLiftCustomerRestriction(customer.activeRestriction.id, 'Restriction cleared by admin');
-      await loadData();
+      await loadCustomers();
       showAlert({
         title: 'Restriction removed',
         message: `${customer.fullName} can place orders again.`,
@@ -159,7 +120,7 @@ export function AdminAccountScreen() {
       onAction: async () => {
         try {
           await adminDeleteCustomerAccount(customer.id, 'Removed by admin for severe policy violation');
-          await loadData();
+          await loadCustomers();
         } catch (error) {
           showAlert({
             title: 'Delete failed',
@@ -169,50 +130,6 @@ export function AdminAccountScreen() {
         }
       },
     });
-  };
-
-  const openThread = async (thread: SellerChatThread) => {
-    try {
-      const nextMessages = await fetchSellerChatMessages(thread.id);
-      setActiveThread(thread);
-      setThreadMessages(nextMessages);
-      setChatDraft('');
-      setChatModalVisible(true);
-      await markSellerChatThreadRead(thread.id);
-      await loadData();
-    } catch {
-      showAlert({
-        title: 'Unable to open chat',
-        message: 'Please try again.',
-        tone: 'error',
-      });
-    }
-  };
-
-  const sendChat = async () => {
-    if (!activeThread || !chatDraft.trim() || sendingChat) {
-      return;
-    }
-
-    const message = chatDraft.trim();
-    setSendingChat(true);
-    setChatDraft('');
-    try {
-      await sendSellerChatMessage(activeThread.id, message);
-      const nextMessages = await fetchSellerChatMessages(activeThread.id);
-      setThreadMessages(nextMessages);
-      await markSellerChatThreadRead(activeThread.id);
-      await loadData();
-    } catch (error) {
-      setChatDraft(message);
-      showAlert({
-        title: 'Unable to send',
-        message: error instanceof Error ? error.message : 'Please try again.',
-        tone: 'error',
-      });
-    } finally {
-      setSendingChat(false);
-    }
   };
 
   return (
@@ -227,62 +144,34 @@ export function AdminAccountScreen() {
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Appearance</Text>
-        <View style={styles.row}>
-          <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Dark Mode</Text>
-          <ThemeModeToggle compact />
-        </View>
-      </View>
-
-      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Seller Inbox</Text>
-        {threads.length === 0 ? (
-          <Text style={[styles.meta, { color: theme.colors.textMuted }]}>No chat threads yet.</Text>
-        ) : (
-          <View style={styles.sectionList}>
-            {threads.map((thread) => (
-              <Pressable
-                key={thread.id}
-                style={[styles.threadRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
-                onPress={() => openThread(thread)}
-              >
-                <View style={styles.threadInfo}>
-                  <Text style={[styles.threadName, { color: theme.colors.text }]} numberOfLines={1}>
-                    {thread.customerName}
-                  </Text>
-                  <Text style={[styles.meta, { color: theme.colors.textMuted }]} numberOfLines={1}>
-                    {thread.lastMessage || 'No messages yet'}
-                  </Text>
-                  <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
-                    {formatDateTime(thread.lastMessageAt)}
-                  </Text>
-                </View>
-                {thread.unreadCount > 0 ? (
-                  <View style={[styles.unreadBadge, { backgroundColor: theme.colors.primary }]}>
-                    <Text style={[styles.unreadText, { color: theme.colors.primaryContrast }]}>{thread.unreadCount}</Text>
-                  </View>
-                ) : null}
-              </Pressable>
-            ))}
-          </View>
-        )}
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Messages & Inbox</Text>
+        <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Open the dedicated inbox page for cleaner message management and pagination.</Text>
+        <Pressable
+          style={[styles.inboxButton, { backgroundColor: theme.colors.primary }]}
+          onPress={() => navigation.navigate('Inbox')}
+        >
+          <Text style={[styles.inboxButtonText, { color: theme.colors.primaryContrast }]}>Open Seller Inbox</Text>
+        </Pressable>
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Customer Moderation</Text>
         <TextInput
           value={search}
-          onChangeText={setSearch}
+          onChangeText={(value) => {
+            setSearch(value);
+            setCustomerPage(1);
+          }}
           placeholder="Search by name, email, or user id..."
           placeholderTextColor={theme.colors.textMuted}
           style={[styles.searchInput, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
         />
         {loading ? <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Loading customers...</Text> : null}
-        {!loading && filteredCustomers.length === 0 ? (
+        {!loading && customers.length === 0 ? (
           <Text style={[styles.meta, { color: theme.colors.textMuted }]}>No customers found.</Text>
         ) : (
           <View style={styles.sectionList}>
-            {filteredCustomers.map((customer) => (
+            {customers.map((customer) => (
               <View
                 key={customer.id}
                 style={[styles.customerCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
@@ -291,9 +180,7 @@ export function AdminAccountScreen() {
                 <Text style={[styles.meta, { color: theme.colors.textMuted }]} numberOfLines={1}>
                   {customer.email || customer.id}
                 </Text>
-                <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
-                  Orders: {customer.totalOrders} | Ongoing: {customer.pendingOrders}
-                </Text>
+                <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Orders: {customer.totalOrders} | Ongoing: {customer.pendingOrders}</Text>
                 {customer.activeRestriction ? (
                   <Text style={[styles.meta, { color: theme.colors.warning ?? '#F59E0B' }]}>
                     Active: {SEVERITY_LABEL[customer.activeRestriction.severity]}{' '}
@@ -342,85 +229,53 @@ export function AdminAccountScreen() {
             ))}
           </View>
         )}
+        {customerTotal > CUSTOMER_PAGE_SIZE || customerPage > 1 ? (
+          <View style={styles.paginationRow}>
+            <Pressable
+              style={[
+                styles.paginationBtn,
+                {
+                  borderColor: theme.colors.border,
+                  backgroundColor: customerPage <= 1 ? theme.colors.surfaceAlt : theme.colors.surface,
+                },
+              ]}
+              disabled={customerPage <= 1}
+              onPress={() => setCustomerPage((prev) => Math.max(1, prev - 1))}
+            >
+              <Text style={[styles.paginationBtnText, { color: customerPage <= 1 ? theme.colors.textMuted : theme.colors.text }]}>
+                Previous
+              </Text>
+            </Pressable>
+            <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
+              Page {customerPage} / {customerPageCount}
+            </Text>
+            <Pressable
+              style={[
+                styles.paginationBtn,
+                {
+                  borderColor: theme.colors.border,
+                  backgroundColor: customerPage >= customerPageCount ? theme.colors.surfaceAlt : theme.colors.surface,
+                },
+              ]}
+              disabled={customerPage >= customerPageCount}
+              onPress={() => setCustomerPage((prev) => Math.min(customerPageCount, prev + 1))}
+            >
+              <Text
+                style={[
+                  styles.paginationBtnText,
+                  { color: customerPage >= customerPageCount ? theme.colors.textMuted : theme.colors.text },
+                ]}
+              >
+                Next
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
 
       <Pressable style={[styles.signOutButton, { backgroundColor: theme.colors.danger }]} onPress={() => signOut()}>
         <Text style={styles.signOutText}>Sign Out</Text>
       </Pressable>
-
-      <Modal
-        visible={chatModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
-          setChatModalVisible(false);
-          setActiveThread(null);
-        }}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>
-              {activeThread ? `Chat: ${activeThread.customerName}` : 'Chat'}
-            </Text>
-            <ScrollView style={styles.modalMessages} contentContainerStyle={styles.modalMessagesContent}>
-              {threadMessages.map((message) => {
-                const own = message.senderRole === 'admin';
-                return (
-                  <View key={message.id} style={[styles.chatRow, own ? styles.chatRowRight : styles.chatRowLeft]}>
-                    <View
-                      style={[
-                        styles.chatBubble,
-                        {
-                          backgroundColor: own ? theme.colors.primary : theme.colors.surface,
-                          borderColor: own ? theme.colors.primary : theme.colors.border,
-                        },
-                      ]}
-                    >
-                      <Text style={[styles.chatText, { color: own ? theme.colors.primaryContrast : theme.colors.text }]}>
-                        {message.message}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.chatMeta,
-                          { color: own ? `${theme.colors.primaryContrast}CC` : theme.colors.textMuted },
-                        ]}
-                      >
-                        {formatDateTime(message.createdAt)}
-                      </Text>
-                    </View>
-                  </View>
-                );
-              })}
-            </ScrollView>
-            <TextInput
-              value={chatDraft}
-              onChangeText={setChatDraft}
-              placeholder="Reply..."
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.chatInput, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <View style={styles.modalActions}>
-              <Pressable
-                style={[styles.modalSecondaryBtn, { borderColor: theme.colors.border }]}
-                onPress={() => {
-                  setChatModalVisible(false);
-                  setActiveThread(null);
-                }}
-              >
-                <Text style={[styles.modalSecondaryText, { color: theme.colors.text }]}>Close</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.modalPrimaryBtn, { backgroundColor: sendingChat ? theme.colors.surfaceAlt : theme.colors.primary }]}
-                onPress={sendChat}
-              >
-                <Text style={[styles.modalPrimaryText, { color: sendingChat ? theme.colors.textMuted : theme.colors.primaryContrast }]}>
-                  {sendingChat ? 'Sending...' : 'Send'}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
 
       <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
     </ScrollView>
@@ -454,11 +309,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  row: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
   searchInput: {
     borderRadius: 10,
     borderWidth: 1,
@@ -469,33 +319,24 @@ const styles = StyleSheet.create({
   sectionList: {
     gap: 8,
   },
-  threadRow: {
+  paginationRow: {
     alignItems: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
     flexDirection: 'row',
-    paddingHorizontal: 10,
+    gap: 8,
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  paginationBtn: {
+    borderRadius: 9,
+    borderWidth: 1,
+    minWidth: 92,
+    paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  threadInfo: {
-    flex: 1,
-    gap: 1,
-  },
-  threadName: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  unreadBadge: {
-    alignItems: 'center',
-    borderRadius: 10,
-    justifyContent: 'center',
-    minWidth: 24,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-  },
-  unreadText: {
-    fontSize: 11,
-    fontWeight: '800',
+  paginationBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   customerCard: {
     borderRadius: 10,
@@ -523,6 +364,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
+  inboxButton: {
+    borderRadius: 999,
+    marginTop: 6,
+    paddingVertical: 11,
+  },
+  inboxButtonText: {
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
   signOutButton: {
     borderRadius: 999,
     marginTop: 16,
@@ -531,93 +382,6 @@ const styles = StyleSheet.create({
   signOutText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  modalOverlay: {
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    flex: 1,
-    justifyContent: 'center',
-    padding: 14,
-  },
-  modalCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    maxHeight: '88%',
-    padding: 12,
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  modalMessages: {
-    marginTop: 10,
-    maxHeight: 340,
-  },
-  modalMessagesContent: {
-    gap: 8,
-    paddingBottom: 10,
-  },
-  chatRow: {
-    flexDirection: 'row',
-  },
-  chatRowLeft: {
-    justifyContent: 'flex-start',
-  },
-  chatRowRight: {
-    justifyContent: 'flex-end',
-  },
-  chatBubble: {
-    borderRadius: 10,
-    borderWidth: 1,
-    maxWidth: '86%',
-    paddingHorizontal: 9,
-    paddingTop: 7,
-    paddingBottom: 6,
-  },
-  chatText: {
-    fontSize: 13,
-    fontWeight: '600',
-    lineHeight: 18,
-  },
-  chatMeta: {
-    fontSize: 10,
-    fontWeight: '600',
-    marginTop: 4,
-  },
-  chatInput: {
-    borderRadius: 10,
-    borderWidth: 1,
-    fontSize: 13,
-    marginTop: 8,
-    maxHeight: 110,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    textAlignVertical: 'top',
-  },
-  modalActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-  },
-  modalSecondaryBtn: {
-    borderRadius: 10,
-    borderWidth: 1,
-    flex: 1,
-    paddingVertical: 10,
-  },
-  modalSecondaryText: {
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  modalPrimaryBtn: {
-    borderRadius: 10,
-    flex: 1,
-    paddingVertical: 10,
-  },
-  modalPrimaryText: {
-    fontSize: 12,
     fontWeight: '800',
     textAlign: 'center',
   },

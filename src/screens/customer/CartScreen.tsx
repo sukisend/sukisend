@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
 import { EmptyState } from '../../components/EmptyState';
+import { LogoHeader } from '../../components/LogoHeader';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { CustomerStackParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
@@ -169,6 +170,7 @@ export function CartScreen() {
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 8), paddingTop: insets.top + 10 }]}
     >
+      <LogoHeader />
       <Text style={[styles.title, { color: theme.colors.text }]}>My Cart</Text>
       <Text style={[styles.subtitle, { color: theme.colors.textMuted }]}>
         Select products you want to check out now.

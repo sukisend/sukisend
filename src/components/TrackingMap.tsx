@@ -11,6 +11,7 @@ interface TrackingMapProps {
   origin?: Coordinate | null;
   destination?: Coordinate | null;
   routeCoordinates?: Coordinate[];
+  routeColor?: string;
 }
 
 const TrackingMapImpl =

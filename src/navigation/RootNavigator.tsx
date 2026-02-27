@@ -9,7 +9,6 @@ import { OnboardingScreen } from '../screens/customer/OnboardingScreen';
 import { AdminNavigator } from './AdminNavigator';
 import { CustomerNavigator } from './CustomerNavigator';
 import { RiderNavigator } from './RiderNavigator';
-import { wait } from '../utils/async';
 
 const ONBOARDING_KEY = 'suki-send-has-seen-onboarding';
 
@@ -20,12 +19,10 @@ export function RootNavigator() {
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
 
   useEffect(() => {
-    Promise.all([
-      AsyncStorage.getItem(ONBOARDING_KEY).then((value) => {
+    AsyncStorage.getItem(ONBOARDING_KEY)
+      .then((value) => {
         setHasSeenOnboarding(value === 'true');
-      }),
-      wait(6000),
-    ])
+      })
       .finally(() => {
         setBootstrapping(false);
       });

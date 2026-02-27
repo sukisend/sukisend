@@ -29,6 +29,7 @@ export type AdminTabsParamList = {
   Dashboard: undefined;
   Products: undefined;
   Transactions: undefined;
+  Inbox: undefined;
   Reports: undefined;
   AdminAccount: undefined;
 };

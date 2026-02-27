@@ -1,6 +1,7 @@
-import { Modal, StyleSheet, Text, View } from 'react-native';
-import { ResizeMode, Video } from 'expo-av';
+import { useEffect, useState } from 'react';
+import { Modal, Platform, StyleSheet, Text, View } from 'react-native';
 
+import { AppVideo } from './AppVideo';
 import { useTheme } from '../providers/ThemeProvider';
 
 interface CheckoutProcessingOverlayProps {
@@ -9,23 +10,50 @@ interface CheckoutProcessingOverlayProps {
 
 export function CheckoutProcessingOverlay({ visible }: CheckoutProcessingOverlayProps) {
   const { theme } = useTheme();
+  const [renderVisible, setRenderVisible] = useState(visible);
+
+  useEffect(() => {
+    if (visible) {
+      setRenderVisible(true);
+      return;
+    }
+
+    const timeout = setTimeout(() => setRenderVisible(false), 140);
+    return () => clearTimeout(timeout);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible || Platform.OS !== 'web' || typeof document === 'undefined') {
+      return;
+    }
+
+    const activeElement = document.activeElement as { blur?: () => void } | null;
+    activeElement?.blur?.();
+  }, [visible]);
+
+  if (!renderVisible) {
+    return null;
+  }
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.backdrop}>
-        <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-          <View style={styles.videoWrap}>
-            <Video
+    <Modal visible={renderVisible} transparent animationType="fade" statusBarTranslucent>
+      <View style={styles.fullscreen}>
+        <View style={styles.scrim} />
+        <View style={styles.content}>
+          <View style={[styles.videoFrame, { borderColor: theme.colors.border }]}>
+            <AppVideo
               source={require('../../loading animation/checkoutanimation.mp4')}
               style={styles.video}
-              shouldPlay
-              isLooping
-              isMuted
-              resizeMode={ResizeMode.CONTAIN}
+              contentFit="cover"
+              loop
+              muted
+              paused={!visible}
             />
           </View>
-          <Text style={[styles.title, { color: theme.colors.text }]}>Processing Checkout</Text>
-          <Text style={[styles.sub, { color: theme.colors.textMuted }]}>Please wait while we confirm your order.</Text>
+          <View style={[styles.messageCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+            <Text style={[styles.title, { color: theme.colors.text }]}>Processing Checkout</Text>
+            <Text style={[styles.sub, { color: theme.colors.textMuted }]}>Placing your COD order...</Text>
+          </View>
         </View>
       </View>
     </Modal>
@@ -33,39 +61,54 @@ export function CheckoutProcessingOverlay({ visible }: CheckoutProcessingOverlay
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  fullscreen: {
     alignItems: 'center',
-    backgroundColor: 'rgba(2, 6, 23, 0.55)',
+    backgroundColor: '#020617',
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: 16,
   },
-  card: {
-    borderRadius: 18,
+  content: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  videoFrame: {
+    backgroundColor: '#020617',
+    borderRadius: 22,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-    width: '100%',
-  },
-  videoWrap: {
-    borderRadius: 12,
-    height: 180,
+    height: '64%',
+    maxHeight: 540,
+    maxWidth: 360,
+    minHeight: 300,
     overflow: 'hidden',
-    width: '100%',
+    width: '90%',
   },
   video: {
     height: '100%',
     width: '100%',
   },
+  scrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(2, 6, 23, 0.38)',
+  },
+  messageCard: {
+    alignSelf: 'center',
+    borderRadius: 18,
+    borderWidth: 1,
+    marginTop: 14,
+    maxWidth: 360,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    width: '90%',
+  },
   title: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '900',
-    marginTop: 10,
     textAlign: 'center',
   },
   sub: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
     marginTop: 4,
     textAlign: 'center',
   },

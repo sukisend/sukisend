@@ -1,22 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useEffect, useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Easing, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
-import { BrandedLoader } from '../../components/BrandedLoader';
 import { EmptyState } from '../../components/EmptyState';
 import { FilterModal } from '../../components/FilterModal';
 import { LogoHeader } from '../../components/LogoHeader';
 import { ProductCard } from '../../components/ProductCard';
 import { ThemeModeToggle } from '../../components/ThemeModeToggle';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
-import { useMinimumLoader } from '../../hooks/useMinimumLoader';
 import { CustomerStackParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
+import { fetchCustomerUnreadSellerMessagesCount } from '../../services/chatModerationService';
 import { fetchPublicCategories, fetchPublicProducts, fetchWishlist, toggleWishlist } from '../../services/productService';
 import { useCartStore } from '../../store/cartStore';
 import { Category, Product, ProductSortOption } from '../../types/models';
@@ -59,9 +58,12 @@ export function HomeScreen() {
   const [sortBy, setSortBy] = useState<ProductSortOption>('all');
   const [wishlistIds, setWishlistIds] = useState<string[]>([]);
   const [filterVisible, setFilterVisible] = useState(false);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
-  const showLoader = useMinimumLoader(loading, 6000);
+  const [welcomeBannerVisible, setWelcomeBannerVisible] = useState(true);
+  const [showWelcomeBanner, setShowWelcomeBanner] = useState(true);
+  const welcomeOpacity = useRef(new Animated.Value(1)).current;
 
   const firstName = useMemo(() => {
     const value = profile?.fullName?.trim();
@@ -80,6 +82,30 @@ export function HomeScreen() {
   }, []);
 
   useEffect(() => {
+    setShowWelcomeBanner(true);
+    setWelcomeBannerVisible(true);
+    welcomeOpacity.setValue(1);
+
+    const timer = setTimeout(() => {
+      Animated.timing(welcomeOpacity, {
+        toValue: 0,
+        duration: 320,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setShowWelcomeBanner(false);
+        }
+      });
+      setWelcomeBannerVisible(false);
+    }, 3000);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [welcomeOpacity]);
+
+  useEffect(() => {
     setPage(1);
   }, [selectedCategory, search, sortBy]);
 
@@ -89,10 +115,27 @@ export function HomeScreen() {
     const loadProducts = async () => {
       setLoading(true);
       try {
-        const nextProducts = await fetchPublicProducts({
+        const baseQuery = {
           search,
           categoryId: selectedCategory,
           sort: sortBy,
+        };
+
+        if (selectedCategory === 'all') {
+          const allRows = await fetchPublicProducts(baseQuery);
+          const uniqueRows = Array.from(new Map(allRows.map((item) => [item.id, item])).values());
+
+          if (cancelled) {
+            return;
+          }
+
+          setProducts(uniqueRows);
+          setHasNextPage(false);
+          return;
+        }
+
+        const nextProducts = await fetchPublicProducts({
+          ...baseQuery,
           page,
           pageSize: PAGE_SIZE,
         });
@@ -136,6 +179,34 @@ export function HomeScreen() {
       .then((rows) => setWishlistIds(rows.map((item) => item.productId)))
       .catch(() => setWishlistIds([]));
   }, [role, profile?.id]);
+
+  useEffect(() => {
+    if (role !== 'customer' || !profile?.id) {
+      setChatUnreadCount(0);
+      return;
+    }
+
+    let active = true;
+    const syncUnread = async () => {
+      try {
+        const unread = await fetchCustomerUnreadSellerMessagesCount(profile.id);
+        if (active) {
+          setChatUnreadCount(unread);
+        }
+      } catch {
+        if (active) {
+          setChatUnreadCount(0);
+        }
+      }
+    };
+
+    syncUnread();
+    const timer = setInterval(syncUnread, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [profile?.id, role]);
 
   const onToggleWishlist = async (productId: string) => {
     if (role !== 'customer' || !profile?.id) {
@@ -209,25 +280,43 @@ export function HomeScreen() {
       <View style={[styles.fixedHeader, { paddingTop: insets.top + 8, paddingHorizontal: 14 }]}>
         <View style={styles.headerRow}>
           <LogoHeader />
-          <ThemeModeToggle compact />
+          <View style={styles.headerActions}>
+            <ThemeModeToggle compact showLabel={false} />
+          </View>
         </View>
+        <Pressable
+          style={[styles.chatHeaderButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
+          onPress={() => navigation.navigate('ChatSeller')}
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={15} color={theme.colors.text} />
+          <Text style={[styles.chatHeaderButtonText, { color: theme.colors.text }]}>Chat Seller</Text>
+          {chatUnreadCount > 0 ? (
+            <View style={[styles.chatBadge, { backgroundColor: theme.colors.primary }]}>
+              <Text style={[styles.chatBadgeText, { color: theme.colors.primaryContrast }]}>
+                {chatUnreadCount > 99 ? '99+' : chatUnreadCount}
+              </Text>
+            </View>
+          ) : null}
+        </Pressable>
 
-        {role === 'guest' ? (
-          <View
+        {showWelcomeBanner ? (
+          <Animated.View
             style={[
               styles.guestHero,
               {
                 backgroundColor: theme.colors.surface,
                 borderColor: theme.colors.border,
+                opacity: welcomeOpacity,
               },
             ]}
+            pointerEvents={welcomeBannerVisible ? 'auto' : 'none'}
           >
             <Image source={require('../../../assets/suki-send-logo.png')} style={styles.guestHeroLogo} resizeMode="contain" />
             <Text style={[styles.guestHeroTitle, { color: theme.colors.text }]}>Welcome to SUKI SEND</Text>
             <Text style={[styles.guestHeroSub, { color: theme.colors.textMuted }]}>
               Shop daily essentials with secure COD checkout and doorstep delivery.
             </Text>
-          </View>
+          </Animated.View>
         ) : null}
 
         <View
@@ -295,8 +384,6 @@ export function HomeScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 8), paddingHorizontal: 14, paddingTop: 10 }}
         showsVerticalScrollIndicator={false}
       >
-        {showLoader ? <BrandedLoader compact label="Loading products..." /> : null}
-
         {productsByCategory.map((group, index) => (
           <View key={group.category?.id ?? `group-${index}`} style={styles.categorySection}>
             {group.category ? (
@@ -327,7 +414,7 @@ export function HomeScreen() {
           <EmptyState title="No products found" subtitle="Try another category or search keyword." />
         ) : null}
 
-        {products.length > 0 || page > 1 ? (
+        {selectedCategory !== 'all' && (products.length > 0 || page > 1) ? (
           <View style={styles.paginationRow}>
             <Pressable
               style={[
@@ -391,14 +478,46 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
+  headerActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  chatHeaderButton: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    marginTop: 8,
+    minHeight: 34,
+    paddingHorizontal: 11,
+  },
+  chatHeaderButtonText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  chatBadge: {
+    alignItems: 'center',
+    borderRadius: 999,
+    justifyContent: 'center',
+    minWidth: 22,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  chatBadgeText: {
+    fontSize: 10,
+    fontWeight: '900',
+  },
   marketingBanner: {
     alignItems: 'center',
     borderRadius: 14,
     borderWidth: 1,
-    minHeight: 64,
+    minHeight: 52,
     marginTop: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   guestHero: {
     alignItems: 'center',
@@ -406,35 +525,35 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginTop: 10,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
   guestHeroLogo: {
-    height: 92,
-    width: 92,
+    height: 74,
+    width: 74,
   },
   guestHeroTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '900',
-    marginTop: 6,
+    marginTop: 4,
     textAlign: 'center',
   },
   guestHeroSub: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
-    lineHeight: 18,
+    lineHeight: 16,
     marginTop: 2,
     textAlign: 'center',
   },
   greeting: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '900',
     textAlign: 'center',
   },
   bannerCopy: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
-    lineHeight: 16,
-    marginTop: 3,
+    lineHeight: 14,
+    marginTop: 2,
     textAlign: 'center',
   },
   searchRow: {

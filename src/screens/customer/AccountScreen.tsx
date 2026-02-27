@@ -5,8 +5,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AppVideo } from '../../components/AppVideo';
 import { AddressPinMap } from '../../components/AddressPinMap';
 import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { LogoHeader } from '../../components/LogoHeader';
 import { SearchableDropdown } from '../../components/SearchableDropdown';
 import { ThemeModeToggle } from '../../components/ThemeModeToggle';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
@@ -15,7 +17,7 @@ import { CustomerStackParamList } from '../../navigation/types';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 import { reverseGeocodePoint } from '../../services/geocodingService';
-import { fetchActiveCustomerRestriction } from '../../services/chatModerationService';
+import { fetchActiveCustomerRestriction, fetchCustomerUnreadSellerMessagesCount } from '../../services/chatModerationService';
 import {
   deleteCustomerAddress,
   fetchCustomerAddresses,
@@ -56,9 +58,11 @@ export function AccountScreen() {
   const [wishlist, setWishlist] = useState<WishlistItem[]>([]);
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
   const [activeRestriction, setActiveRestriction] = useState<CustomerRestriction | null>(null);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const [addressForm, setAddressForm] = useState(DEFAULT_FORM);
   const [savingAddress, setSavingAddress] = useState(false);
   const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
+  const [addressFormExpanded, setAddressFormExpanded] = useState(false);
   const [autoFillFromPinBusy, setAutoFillFromPinBusy] = useState(false);
   const [lastAutoFillPinKey, setLastAutoFillPinKey] = useState('');
   const { provinceOptions, cityOptions, barangayOptions, loadingLocations, isUsingFallback } = useAddressLocations(
@@ -80,26 +84,30 @@ export function AccountScreen() {
       setWishlist([]);
       setRecentOrders([]);
       setActiveRestriction(null);
+      setChatUnreadCount(0);
       return;
     }
 
     try {
-      const [nextAddresses, nextWishlist, nextOrders, restriction] = await Promise.all([
+      const [nextAddresses, nextWishlist, nextOrders, restriction, unreadChat] = await Promise.all([
         fetchCustomerAddresses(profile.id),
         fetchWishlist(profile.id),
         fetchCustomerOrders(profile.id),
         fetchActiveCustomerRestriction(profile.id),
+        fetchCustomerUnreadSellerMessagesCount(profile.id),
       ]);
 
       setAddresses(nextAddresses);
       setWishlist(nextWishlist);
       setRecentOrders(nextOrders.slice(0, 6));
       setActiveRestriction(restriction);
+      setChatUnreadCount(unreadChat);
     } catch {
       setAddresses([]);
       setWishlist([]);
       setRecentOrders([]);
       setActiveRestriction(null);
+      setChatUnreadCount(0);
     }
   }, [profile?.id, role]);
 
@@ -192,6 +200,7 @@ export function AccountScreen() {
       });
       setAddressForm(DEFAULT_FORM);
       setEditingAddressId(null);
+      setAddressFormExpanded(false);
       await loadData();
     } finally {
       setSavingAddress(false);
@@ -212,14 +221,20 @@ export function AccountScreen() {
         paddingBottom: Math.max(insets.bottom, 8),
       }}
     >
-      <Text style={[styles.title, { color: theme.colors.text }]}>Account</Text>
+      <LogoHeader />
+      <View style={styles.titleRow}>
+        <Text style={[styles.title, { color: theme.colors.text }]}>Account</Text>
+        <ThemeModeToggle compact showLabel={false} />
+      </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Appearance</Text>
-        <View style={styles.switchRow}>
-          <Text style={[styles.label, { color: theme.colors.textMuted }]}>Dark Mode</Text>
-          <ThemeModeToggle compact />
-        </View>
+        <AppVideo
+          source={require('../../../loading animation/loadingspinner.mp4')}
+          style={styles.profileVideo}
+          contentFit="contain"
+          loop
+          muted
+        />
       </View>
 
       {role === 'guest' ? (
@@ -270,7 +285,17 @@ export function AccountScreen() {
               style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]}
               onPress={() => navigation.navigate('ChatSeller')}
             >
-              <Text style={[styles.primaryButtonText, { color: theme.colors.primaryContrast }]}>Chat Seller</Text>
+              <View style={styles.supportButtonContent}>
+                <Ionicons name="chatbubble-ellipses-outline" size={16} color={theme.colors.primaryContrast} />
+                <Text style={[styles.primaryButtonText, { color: theme.colors.primaryContrast }]}>Chat Seller</Text>
+                {chatUnreadCount > 0 ? (
+                  <View style={[styles.supportButtonBadge, { backgroundColor: theme.colors.primaryContrast }]}>
+                    <Text style={[styles.supportButtonBadgeText, { color: theme.colors.primary }]}>
+                      {chatUnreadCount > 99 ? '99+' : chatUnreadCount}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
             </Pressable>
             <Pressable
               style={[styles.secondaryButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
@@ -392,6 +417,7 @@ export function AccountScreen() {
                         longitude: address.longitude ?? null,
                       });
                       setEditingAddressId(address.id);
+                      setAddressFormExpanded(true);
                     }}
                   >
                     <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Edit</Text>
@@ -429,174 +455,188 @@ export function AccountScreen() {
           </View>
 
           <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>
-              {editingAddressId ? 'Edit Delivery Address' : 'Add New Delivery Address'}
-            </Text>
-            <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
-              Tap map to pin your exact delivery location.
-            </Text>
-            <AddressPinMap
-              value={pinValue}
-              onChange={(next) =>
-                setAddressForm((prev) => ({
-                  ...prev,
-                  latitude: Number(next.latitude.toFixed(7)),
-                  longitude: Number(next.longitude.toFixed(7)),
-                }))
-              }
-            />
-            <View style={styles.pinMetaRow}>
-              <Text style={[styles.pinMeta, { color: theme.colors.textMuted }]}>
-                {Number.isFinite(addressForm.latitude) && Number.isFinite(addressForm.longitude)
-                  ? `Pinned: ${Number(addressForm.latitude).toFixed(5)}, ${Number(addressForm.longitude).toFixed(5)}`
-                  : 'No pinned location yet'}
+            <Pressable style={styles.addressFormHeader} onPress={() => setAddressFormExpanded((prev) => !prev)}>
+              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>
+                {editingAddressId ? 'Edit Delivery Address' : 'Add New Delivery Address'}
               </Text>
-              <Pressable
-                style={[styles.secondaryButtonMini, { borderColor: theme.colors.border }]}
-                onPress={async () => {
-                  if (!Number.isFinite(addressForm.latitude) || !Number.isFinite(addressForm.longitude)) {
-                    return;
-                  }
-
-                  const reversed = await reverseGeocodePoint({
-                    latitude: Number(addressForm.latitude),
-                    longitude: Number(addressForm.longitude),
-                  });
-                  if (!reversed) {
-                    return;
-                  }
-
-                  setAddressForm((prev) => ({
-                    ...prev,
-                    countryRegion: reversed.countryRegion ?? prev.countryRegion,
-                    province: reversed.province ?? prev.province,
-                    city: reversed.city ?? prev.city,
-                    barangay: reversed.barangay ?? prev.barangay,
-                    postalCode: reversed.postalCode ?? prev.postalCode,
-                    line1: reversed.line1 ?? reversed.displayName?.split(',')[0] ?? prev.line1,
-                  }));
-                }}
-              >
-                <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Auto-fill from pin</Text>
-              </Pressable>
-            </View>
-            {autoFillFromPinBusy ? (
-              <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
-                Detecting address details from your pinned location...
-              </Text>
-            ) : null}
-            <View style={styles.formRow}>
-              <TextInput
-                value={addressForm.firstName}
-                onChangeText={(value) => setAddressForm((prev) => ({ ...prev, firstName: value }))}
-                placeholder="First name"
-                placeholderTextColor={theme.colors.textMuted}
-                style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+              <Ionicons
+                name={addressFormExpanded ? 'chevron-up-outline' : 'chevron-down-outline'}
+                size={18}
+                color={theme.colors.text}
               />
-              <TextInput
-                value={addressForm.lastName}
-                onChangeText={(value) => setAddressForm((prev) => ({ ...prev, lastName: value }))}
-                placeholder="Last name"
-                placeholderTextColor={theme.colors.textMuted}
-                style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-              />
-            </View>
-            <TextInput
-              value={addressForm.phone}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, phone: value.startsWith('+63') ? value : `+63${value.replace(/^[+]?63/, '')}` }))}
-              placeholder="+63"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
-              {loadingLocations
-                ? 'Loading location options...'
-                : isUsingFallback
-                  ? 'Using built-in location list (API currently unavailable).'
-                  : 'Powered by PSGC location API for full PH coverage.'}
-            </Text>
-
-            <SearchableDropdown
-              label="Province"
-              placeholder="Select province..."
-              value={addressForm.province}
-              options={provinceOptions}
-              allowCustom
-              onSelect={(value) =>
-                setAddressForm((prev) => ({
-                  ...prev,
-                  province: value,
-                  city: '',
-                  barangay: '',
-                }))
-              }
-            />
-
-            <SearchableDropdown
-              label="City"
-              placeholder="Select city..."
-              value={addressForm.city}
-              options={cityOptions}
-              allowCustom
-              onSelect={(value) =>
-                setAddressForm((prev) => ({
-                  ...prev,
-                  city: value,
-                  barangay: '',
-                }))
-              }
-            />
-
-            <SearchableDropdown
-              label="Barangay"
-              placeholder="Select barangay..."
-              value={addressForm.barangay}
-              options={barangayOptions}
-              allowCustom
-              onSelect={(value) => setAddressForm((prev) => ({ ...prev, barangay: value }))}
-            />
-
-            <TextInput
-              value={addressForm.postalCode}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, postalCode: value }))}
-              placeholder="Postal code"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <TextInput
-              value={addressForm.line1}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line1: value }))}
-              placeholder="Complete address"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <TextInput
-              value={addressForm.line2}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line2: value }))}
-              placeholder="Landmark (optional)"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <Pressable
-              style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]}
-              onPress={saveAddress}
-              disabled={savingAddress}
-            >
-              <Text style={[styles.primaryButtonText, { color: theme.colors.primaryContrast }]}>
-                {savingAddress ? 'Saving...' : editingAddressId ? 'Update Address' : 'Save Address'}
-              </Text>
             </Pressable>
-            {editingAddressId ? (
-              <Pressable
-                style={[styles.secondaryButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
-                onPress={() => {
-                  setEditingAddressId(null);
-                  setAddressForm(DEFAULT_FORM);
-                }}
-              >
-                <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Cancel Editing</Text>
-              </Pressable>
-            ) : null}
+            {addressFormExpanded ? (
+              <>
+                <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
+                  Tap map to pin your exact delivery location.
+                </Text>
+                <AddressPinMap
+                  value={pinValue}
+                  onChange={(next) =>
+                    setAddressForm((prev) => ({
+                      ...prev,
+                      latitude: Number(next.latitude.toFixed(7)),
+                      longitude: Number(next.longitude.toFixed(7)),
+                    }))
+                  }
+                />
+                <View style={styles.pinMetaRow}>
+                  <Text style={[styles.pinMeta, { color: theme.colors.textMuted }]}>
+                    {Number.isFinite(addressForm.latitude) && Number.isFinite(addressForm.longitude)
+                      ? `Pinned: ${Number(addressForm.latitude).toFixed(5)}, ${Number(addressForm.longitude).toFixed(5)}`
+                      : 'No pinned location yet'}
+                  </Text>
+                  <Pressable
+                    style={[styles.secondaryButtonMini, { borderColor: theme.colors.border }]}
+                    onPress={async () => {
+                      if (!Number.isFinite(addressForm.latitude) || !Number.isFinite(addressForm.longitude)) {
+                        return;
+                      }
+
+                      const reversed = await reverseGeocodePoint({
+                        latitude: Number(addressForm.latitude),
+                        longitude: Number(addressForm.longitude),
+                      });
+                      if (!reversed) {
+                        return;
+                      }
+
+                      setAddressForm((prev) => ({
+                        ...prev,
+                        countryRegion: reversed.countryRegion ?? prev.countryRegion,
+                        province: reversed.province ?? prev.province,
+                        city: reversed.city ?? prev.city,
+                        barangay: reversed.barangay ?? prev.barangay,
+                        postalCode: reversed.postalCode ?? prev.postalCode,
+                        line1: reversed.line1 ?? reversed.displayName?.split(',')[0] ?? prev.line1,
+                      }));
+                    }}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Auto-fill from pin</Text>
+                  </Pressable>
+                </View>
+                {autoFillFromPinBusy ? (
+                  <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
+                    Detecting address details from your pinned location...
+                  </Text>
+                ) : null}
+                <View style={styles.formRow}>
+                  <TextInput
+                    value={addressForm.firstName}
+                    onChangeText={(value) => setAddressForm((prev) => ({ ...prev, firstName: value }))}
+                    placeholder="First name"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                  />
+                  <TextInput
+                    value={addressForm.lastName}
+                    onChangeText={(value) => setAddressForm((prev) => ({ ...prev, lastName: value }))}
+                    placeholder="Last name"
+                    placeholderTextColor={theme.colors.textMuted}
+                    style={[styles.input, styles.half, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                  />
+                </View>
+                <TextInput
+                  value={addressForm.phone}
+                  onChangeText={(value) => setAddressForm((prev) => ({ ...prev, phone: value.startsWith('+63') ? value : `+63${value.replace(/^[+]?63/, '')}` }))}
+                  placeholder="+63"
+                  placeholderTextColor={theme.colors.textMuted}
+                  style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                />
+                <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
+                  {loadingLocations
+                    ? 'Loading location options...'
+                    : isUsingFallback
+                      ? 'Using built-in location list for now.'
+                      : 'Select province, city, and barangay.'}
+                </Text>
+
+                <SearchableDropdown
+                  label="Province"
+                  placeholder="Select province..."
+                  value={addressForm.province}
+                  options={provinceOptions}
+                  allowCustom
+                  onSelect={(value) =>
+                    setAddressForm((prev) => ({
+                      ...prev,
+                      province: value,
+                      city: '',
+                      barangay: '',
+                    }))
+                  }
+                />
+
+                <SearchableDropdown
+                  label="City"
+                  placeholder="Select city..."
+                  value={addressForm.city}
+                  options={cityOptions}
+                  allowCustom
+                  onSelect={(value) =>
+                    setAddressForm((prev) => ({
+                      ...prev,
+                      city: value,
+                      barangay: '',
+                    }))
+                  }
+                />
+
+                <SearchableDropdown
+                  label="Barangay"
+                  placeholder="Select barangay..."
+                  value={addressForm.barangay}
+                  options={barangayOptions}
+                  allowCustom
+                  onSelect={(value) => setAddressForm((prev) => ({ ...prev, barangay: value }))}
+                />
+
+                <TextInput
+                  value={addressForm.postalCode}
+                  onChangeText={(value) => setAddressForm((prev) => ({ ...prev, postalCode: value }))}
+                  placeholder="Postal code"
+                  placeholderTextColor={theme.colors.textMuted}
+                  style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                />
+                <TextInput
+                  value={addressForm.line1}
+                  onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line1: value }))}
+                  placeholder="Complete address"
+                  placeholderTextColor={theme.colors.textMuted}
+                  style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                />
+                <TextInput
+                  value={addressForm.line2}
+                  onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line2: value }))}
+                  placeholder="Landmark (optional)"
+                  placeholderTextColor={theme.colors.textMuted}
+                  style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                />
+                <Pressable
+                  style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]}
+                  onPress={saveAddress}
+                  disabled={savingAddress}
+                >
+                  <Text style={[styles.primaryButtonText, { color: theme.colors.primaryContrast }]}>
+                    {savingAddress ? 'Saving...' : editingAddressId ? 'Update Address' : 'Save Address'}
+                  </Text>
+                </Pressable>
+                {editingAddressId ? (
+                  <Pressable
+                    style={[styles.secondaryButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                    onPress={() => {
+                      setEditingAddressId(null);
+                      setAddressForm(DEFAULT_FORM);
+                      setAddressFormExpanded(false);
+                    }}
+                  >
+                    <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Cancel Editing</Text>
+                  </Pressable>
+                ) : null}
+              </>
+            ) : (
+              <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>Tap to open delivery address form.</Text>
+            )}
           </View>
 
           <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
@@ -633,9 +673,19 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  titleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
   title: {
     fontSize: 22,
     fontWeight: '900',
+  },
+  profileVideo: {
+    borderRadius: 12,
+    height: 170,
+    width: '100%',
   },
   card: {
     borderRadius: 14,
@@ -647,6 +697,11 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontSize: 16,
     fontWeight: '800',
+  },
+  addressFormHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
   switchRow: {
     alignItems: 'center',
@@ -775,6 +830,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     textAlign: 'center',
+  },
+  supportButtonContent: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+  },
+  supportButtonBadge: {
+    alignItems: 'center',
+    borderRadius: 999,
+    minWidth: 22,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  supportButtonBadgeText: {
+    fontSize: 10,
+    fontWeight: '900',
   },
   secondaryButton: {
     borderRadius: 999,

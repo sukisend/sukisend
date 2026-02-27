@@ -34,7 +34,6 @@ import { fetchActiveCustomerRestriction } from '../../services/chatModerationSer
 import { fetchDeliveryRatePerKmSetting } from '../../services/settingsService';
 import { useCartStore } from '../../store/cartStore';
 import { CustomerAddress, CustomerRestriction, ShippingMethod } from '../../types/models';
-import { wait } from '../../utils/async';
 import { formatPHP } from '../../utils/currency';
 import { getProductBasePrice } from '../../utils/pricing';
 
@@ -52,11 +51,16 @@ const DEFAULT_ADDRESS_FORM = {
   latitude: null as number | null,
   longitude: null as number | null,
 };
+const CHECKOUT_ANIMATION_MS = 6000;
 
 type CheckoutRoute = RouteProp<CustomerStackParamList, 'Checkout'>;
 
 function getCartItemKey(productId: string, variantId?: string) {
   return `${productId}::${variantId ?? 'default'}`;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function CheckoutScreen() {
@@ -122,13 +126,7 @@ export function CheckoutScreen() {
   const deliveryFee = distanceDeliveryFee ?? baseDeliveryFee;
   const total = checkoutSubtotal + (checkoutItems.length ? deliveryFee : 0);
 
-  // Filter shipping methods: Only show "Suki Send Rider" (or fall back to all if it doesn't exist)
-  const displayedShippingMethods = useMemo(() => {
-    const sukiRider = shippingMethods.find((m) =>
-      m.name.toLowerCase().includes('suki send'),
-    );
-    return sukiRider ? [sukiRider] : shippingMethods;
-  }, [shippingMethods]);
+  const displayedShippingMethods = useMemo(() => shippingMethods, [shippingMethods]);
 
   const loadCheckoutData = async () => {
     if (!profile?.id) {
@@ -148,11 +146,7 @@ export function CheckoutScreen() {
       setActiveRestriction(restriction);
       setSelectedAddressId(nextAddresses.find((item) => item.isDefault)?.id ?? nextAddresses[0]?.id ?? null);
 
-      // Auto-select Suki Send Rider if available
-      const sukiRider = nextShipping.find((m) =>
-        m.name.toLowerCase().includes('suki send'),
-      );
-      setSelectedShippingMethodId(sukiRider?.id ?? nextShipping[0]?.id ?? null);
+      setSelectedShippingMethodId(nextShipping[0]?.id ?? null);
     } catch {
       setAddresses([]);
       setShippingMethods([]);
@@ -335,7 +329,7 @@ export function CheckoutScreen() {
     }
   };
 
-  if (!checkoutItems.length) {
+  if (!placing && !checkoutItems.length) {
     return (
       <View style={[styles.emptyWrap, { backgroundColor: theme.colors.background }]}>
         <EmptyState title="No selected items for checkout" subtitle="Go back to cart and select products first." />
@@ -385,25 +379,31 @@ export function CheckoutScreen() {
       return;
     }
 
+    const startedAt = Date.now();
+    const itemsToCheckout = [...checkoutItems];
     setPlacing(true);
     try {
-      const [orderNo] = await Promise.all([
-        createCodOrder({
-          customerId: profile.id,
-          addressId: selectedAddressId,
-          shippingMethodId: selectedShippingMethodId,
-          items: checkoutItems,
-          customerNote: customerNote.trim() || undefined,
-          deliveryFee,
-        }),
-        wait(6000),
-      ]);
+      const orderNo = await createCodOrder({
+        customerId: profile.id,
+        addressId: selectedAddressId,
+        shippingMethodId: selectedShippingMethodId,
+        items: itemsToCheckout,
+        customerNote: customerNote.trim() || undefined,
+        deliveryFee,
+      });
+
+      const elapsedMs = Date.now() - startedAt;
+      const remainingMs = Math.max(0, CHECKOUT_ANIMATION_MS - elapsedMs);
+      if (remainingMs > 0) {
+        await sleep(remainingMs);
+      }
 
       if (selectedKeys.length) {
-        checkoutItems.forEach((item) => removeItem(item.product.id, item.variantId));
+        itemsToCheckout.forEach((item) => removeItem(item.product.id, item.variantId));
       } else {
         clearCart();
       }
+
       showAlert({
         title: 'Order placed successfully',
         message: `Your COD reference number is ${orderNo}.`,
@@ -611,8 +611,8 @@ export function CheckoutScreen() {
           {loadingLocations
             ? 'Loading location options...'
             : isUsingFallback
-              ? 'Using built-in location list (API currently unavailable).'
-              : 'Powered by PSGC location API for full PH coverage.'}
+              ? 'Using built-in location list for now.'
+              : 'Select province, city, and barangay.'}
         </Text>
 
         <SearchableDropdown

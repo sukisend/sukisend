@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, Image, Pressable, StyleSheet, Text, Vibration, View } from 'react-native';
 
 import { useTheme } from '../providers/ThemeProvider';
@@ -17,11 +17,35 @@ interface ProductCardProps {
 
 export function ProductCard({ product, onPress, onAdd, wishlisted, onToggleWishlist }: ProductCardProps) {
   const { theme } = useTheme();
+  const imageUrls = useMemo(() => {
+    const gallery = (product.images ?? []).map((item) => item.imageUrl).filter(Boolean);
+    if (gallery.length) {
+      return gallery;
+    }
+    return product.imageUrl ? [product.imageUrl] : [];
+  }, [product.imageUrl, product.images]);
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
   const outOfStock = product.stock <= 0;
   const displayPrice = getProductBasePrice(product);
   const hasDiscount = displayPrice < product.price;
   const shakeX = useRef(new Animated.Value(0)).current;
   const pulse = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    setActiveImageIndex(0);
+  }, [product.id, imageUrls.length]);
+
+  useEffect(() => {
+    if (imageUrls.length <= 1) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setActiveImageIndex((prev) => (prev + 1) % imageUrls.length);
+    }, 2800);
+
+    return () => clearInterval(timer);
+  }, [imageUrls.length]);
 
   const triggerAddFeedback = () => {
     Vibration.vibrate(12);
@@ -60,13 +84,29 @@ export function ProductCard({ product, onPress, onAdd, wishlisted, onToggleWishl
       onPress={onPress}
     >
       <View style={styles.imageWrap}>
-        {product.imageUrl ? (
-          <Image source={{ uri: product.imageUrl }} style={styles.image} resizeMode="cover" />
+        {imageUrls.length ? (
+          <Image source={{ uri: imageUrls[activeImageIndex] }} style={styles.image} resizeMode="cover" />
         ) : (
           <View style={[styles.fallbackImage, { backgroundColor: theme.colors.surfaceAlt }]}>
             <Ionicons name="basket-outline" size={26} color={theme.colors.textMuted} />
           </View>
         )}
+
+        {imageUrls.length > 1 ? (
+          <View style={styles.imageDots}>
+            {imageUrls.slice(0, 5).map((uri, index) => (
+              <View
+                key={`${uri}-${index}`}
+                style={[
+                  styles.imageDot,
+                  {
+                    backgroundColor: index === activeImageIndex ? theme.colors.primary : 'rgba(15,23,42,0.35)',
+                  },
+                ]}
+              />
+            ))}
+          </View>
+        ) : null}
 
         {onToggleWishlist ? (
           <Pressable
@@ -160,7 +200,21 @@ const styles = StyleSheet.create({
     height: 108,
     justifyContent: 'center',
     overflow: 'hidden',
+    position: 'relative',
     width: '100%',
+  },
+  imageDots: {
+    bottom: 6,
+    flexDirection: 'row',
+    gap: 4,
+    left: 8,
+    position: 'absolute',
+    zIndex: 5,
+  },
+  imageDot: {
+    borderRadius: 999,
+    height: 5,
+    width: 14,
   },
   image: {
     borderRadius: 10,

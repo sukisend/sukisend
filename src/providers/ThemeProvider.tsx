@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useColorScheme } from 'react-native';
 
 import { AppTheme, darkTheme, lightTheme } from '../theme/tokens';
@@ -33,14 +33,22 @@ export function ThemeProvider({ children }: PropsWithChildren) {
       });
   }, []);
 
-  const setMode = (nextMode: ThemeMode) => {
+  const setMode = useCallback((nextMode: ThemeMode) => {
     setModeState(nextMode);
     AsyncStorage.setItem(STORAGE_KEY, nextMode).catch(() => {
       // Persist failures should not block the UI.
     });
-  };
+  }, []);
 
-  const toggleTheme = () => setMode(mode === 'dark' ? 'light' : 'dark');
+  const toggleTheme = useCallback(() => {
+    setModeState((prevMode) => {
+      const nextMode = prevMode === 'dark' ? 'light' : 'dark';
+      AsyncStorage.setItem(STORAGE_KEY, nextMode).catch(() => {
+        // Persist failures should not block the UI.
+      });
+      return nextMode;
+    });
+  }, []);
 
   const theme = mode === 'dark' ? darkTheme : lightTheme;
 
@@ -51,7 +59,7 @@ export function ThemeProvider({ children }: PropsWithChildren) {
       toggleTheme,
       setMode,
     }),
-    [theme, mode],
+    [theme, mode, setMode, toggleTheme],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

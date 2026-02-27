@@ -1,7 +1,8 @@
-﻿import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { useMemo, useState } from 'react';
 import { FlatList, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { ModalBackdrop } from './ModalBackdrop';
 import { useTheme } from '../providers/ThemeProvider';
 
 interface SearchableDropdownProps {
@@ -164,9 +165,9 @@ export function SearchableDropdown({ label, placeholder, value, options, onSelec
         ) : null
       ) : (
         <Modal visible={open} transparent animationType="slide" onRequestClose={closeDropdown}>
-          <View style={styles.overlay}>
+          <ModalBackdrop align="flex-end" overlayOpacity={0.32} intensity={32} paddingHorizontal={0}>
             <View style={[styles.sheet, { backgroundColor: theme.colors.card }]}>{panelContent}</View>
-          </View>
+          </ModalBackdrop>
         </Modal>
       )}
     </>
@@ -192,11 +193,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: '500',
-  },
-  overlay: {
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    flex: 1,
-    justifyContent: 'flex-end',
   },
   sheet: {
     borderTopLeftRadius: 24,
@@ -282,3 +278,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
+
+
+
+

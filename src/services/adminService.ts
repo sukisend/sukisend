@@ -128,6 +128,42 @@ function isInsideRange(dateValue: string, range: DateRange) {
   return date >= dayjs(range.start).valueOf() && date <= dayjs(range.end).valueOf();
 }
 
+function getActiveVariantStocks(product: Product) {
+  return (product.variants ?? [])
+    .filter((variant) => variant.isActive && Number.isFinite(variant.stockOverride))
+    .map((variant) => Number(variant.stockOverride));
+}
+
+function countVariantLowStocks(product: Product) {
+  return getActiveVariantStocks(product).filter((stock) => stock <= product.minStock).length;
+}
+
+function buildVariantLowStockItems(products: Product[]) {
+  const rows: Product[] = [];
+
+  for (const product of products) {
+    for (const variant of product.variants ?? []) {
+      if (!variant.isActive || !Number.isFinite(variant.stockOverride)) {
+        continue;
+      }
+
+      const variantStock = Number(variant.stockOverride);
+      if (variantStock > product.minStock) {
+        continue;
+      }
+
+      rows.push({
+        ...product,
+        id: `${product.id}::${variant.id}`,
+        name: `${product.name} (${variant.value})`,
+        stock: variantStock,
+      });
+    }
+  }
+
+  return rows;
+}
+
 function buildMetrics(products: Product[], orders: Order[]): {
   metrics: SalesMetrics;
   topProducts: ProductSalesRank[];
@@ -173,7 +209,10 @@ function buildMetrics(products: Product[], orders: Order[]): {
     .map(([category, sales]) => ({ category, sales }))
     .sort((a, b) => b.sales - a.sales);
 
-  const lowStockCount = products.filter((item) => item.stock <= item.minStock).length;
+  const lowStockCount = products.reduce((count, item) => {
+    const baseLow = item.stock <= item.minStock ? 1 : 0;
+    return count + baseLow + countVariantLowStocks(item);
+  }, 0);
   const pendingOrders = orders.filter((item) => item.status === 'pending').length;
   const outgoingOrders = orders.filter((item) => ['approved', 'confirmed', 'preparing', 'packed', 'shipped', 'out_for_delivery'].includes(item.status)).length;
 
@@ -220,7 +259,7 @@ export async function fetchAdminCategories(): Promise<Category[]> {
 
 export async function fetchShippingMethodsAdmin(): Promise<ShippingMethod[]> {
   if (!supabase) {
-    return [{ id: 'ship-rider', name: 'Suki Send Rider', baseFee: 35, etaMinDays: 0, etaMaxDays: 1, isActive: true }];
+    return [];
   }
 
   const { data, error } = await supabase
@@ -820,7 +859,8 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus, no
     p_lng: lng ?? null,
   });
   if (error) {
-    throw new Error(error.message);
+    const details = [error.message, error.details, error.hint].filter(Boolean).join(' ');
+    throw new Error(details || 'Failed to update order status.');
   }
 }
 
@@ -855,6 +895,29 @@ export async function resolveRefund(refundRequestId: string, approve: boolean, a
   }
 }
 
+export async function fetchAdminOrderAlertCount(sinceIso?: string): Promise<number> {
+  if (!supabase) {
+    return 0;
+  }
+
+  let query = supabase
+    .from('orders')
+    .select('id', { head: true, count: 'exact' })
+    .in('status', ['pending', 'approved', 'refund_requested']);
+
+  if (sinceIso) {
+    query = query.gt('updated_at', sinceIso);
+  }
+
+  const { count, error } = await query;
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return Number(count ?? 0);
+}
+
 export async function fetchDashboardSnapshot(
   rangePreset: SalesRangePreset = 'month',
   customRange?: DateRange,
@@ -868,7 +931,11 @@ export async function fetchDashboardSnapshot(
   const transactionsInRange = recentTransactions.filter((order) => isInsideRange(order.createdAt, range));
 
   const { metrics, topProducts, categorySales } = buildMetrics(products, transactionsInRange);
-  const lowStockItems = products.filter((product) => product.stock <= product.minStock).slice(0, 8);
+  const baseLowStockItems = products.filter((product) => product.stock <= product.minStock);
+  const variantLowStockItems = buildVariantLowStockItems(products);
+  const lowStockItems = [...baseLowStockItems, ...variantLowStockItems]
+    .sort((a, b) => a.stock - b.stock)
+    .slice(0, 8);
 
   return {
     metrics,

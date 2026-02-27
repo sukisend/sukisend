@@ -9,7 +9,7 @@ interface SectionHeaderProps {
   showThemeToggle?: boolean;
 }
 
-export function SectionHeader({ title, subtitle, showThemeToggle = true }: SectionHeaderProps) {
+export function SectionHeader({ title, subtitle, showThemeToggle = false }: SectionHeaderProps) {
   const { theme } = useTheme();
 
   return (

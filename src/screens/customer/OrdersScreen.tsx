@@ -19,6 +19,8 @@ import { BrandedLoader } from '../../components/BrandedLoader';
 import { EmptyState } from '../../components/EmptyState';
 import { BrandAlertModal } from '../../components/BrandAlertModal';
 import { ImagePreviewModal } from '../../components/ImagePreviewModal';
+import { LogoHeader } from '../../components/LogoHeader';
+import { ModalBackdrop } from '../../components/ModalBackdrop';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { useMinimumLoader } from '../../hooks/useMinimumLoader';
 import { CustomerStackParamList } from '../../navigation/types';
@@ -90,6 +92,38 @@ function getTrackingAddressCandidates(order: Order) {
   return [...new Set(fallbacks.filter(Boolean))];
 }
 
+function clampProgress(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function getStatusRouteProgress(status: Order['status']) {
+  switch (status) {
+    case 'shipped':
+      return 0.35;
+    case 'out_for_delivery':
+      return 0.7;
+    case 'delivered':
+      return 1;
+    case 'completed':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function getRoutePointAtProgress(route: Array<{ latitude: number; longitude: number }>, progress: number) {
+  if (!route.length) {
+    return null;
+  }
+
+  const normalized = clampProgress(progress);
+  const index = Math.round(normalized * (route.length - 1));
+  return route[Math.max(0, Math.min(index, route.length - 1))] ?? null;
+}
+
 export function OrdersScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<CustomerStackParamList>>();
@@ -104,6 +138,7 @@ export function OrdersScreen() {
   const [trackingEvents, setTrackingEvents] = useState<OrderTrackingEvent[]>([]);
   const [trackingDestination, setTrackingDestination] = useState<{ latitude: number; longitude: number } | null>(null);
   const [trackingRouteCoordinates, setTrackingRouteCoordinates] = useState<Array<{ latitude: number; longitude: number }>>([]);
+  const [trackingSimulatedProgress, setTrackingSimulatedProgress] = useState<number | null>(null);
   const [refundOrder, setRefundOrder] = useState<Order | null>(null);
   const [refundReason, setRefundReason] = useState('');
   const [refundNote, setRefundNote] = useState('');
@@ -119,7 +154,7 @@ export function OrdersScreen() {
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewImages, setPreviewImages] = useState<string[]>([]);
   const [previewIndex, setPreviewIndex] = useState(0);
-  const showLoader = useMinimumLoader(loading, 6000);
+  const showLoader = useMinimumLoader(loading, 500);
 
   const loadOrders = useCallback(async () => {
     if (!profile?.id) {
@@ -175,13 +210,40 @@ export function OrdersScreen() {
       longitude: trackingOrder.latestLng,
     };
   }, [trackingOrder]);
+  const trackingSimulatedPoint = useMemo(
+    () => getRoutePointAtProgress(trackingRouteCoordinates, trackingSimulatedProgress ?? 0),
+    [trackingRouteCoordinates, trackingSimulatedProgress],
+  );
   const trackingMapCoordinates = useMemo(() => {
+    if (!trackingOrder) {
+      return [];
+    }
+
+    if (trackingOrder.status === 'completed') {
+      return [trackingOrigin];
+    }
+
     if (trackingCoordinates.length) {
       return trackingCoordinates;
     }
 
-    return trackingLatestPoint ? [trackingLatestPoint] : [];
-  }, [trackingCoordinates, trackingLatestPoint]);
+    if (trackingLatestPoint) {
+      return [trackingLatestPoint];
+    }
+
+    if (trackingOrder.status === 'delivered') {
+      if (trackingDestination) {
+        return [trackingDestination];
+      }
+      return trackingSimulatedPoint ? [trackingSimulatedPoint] : [trackingOrigin];
+    }
+
+    if (trackingOrder.status === 'shipped' || trackingOrder.status === 'out_for_delivery') {
+      return trackingSimulatedPoint ? [trackingSimulatedPoint] : [trackingOrigin];
+    }
+
+    return [trackingOrigin];
+  }, [trackingCoordinates, trackingDestination, trackingLatestPoint, trackingOrder, trackingOrigin, trackingSimulatedPoint]);
 
   useEffect(() => {
     if (!trackingOrder) {
@@ -207,6 +269,44 @@ export function OrdersScreen() {
       clearInterval(timer);
     };
   }, [trackingOrder]);
+
+  useEffect(() => {
+    if (!trackingOrder || !trackingRouteCoordinates.length) {
+      setTrackingSimulatedProgress(null);
+      return;
+    }
+
+    const hasLiveTracking = trackingCoordinates.length > 0 || Boolean(trackingLatestPoint);
+    if (hasLiveTracking) {
+      setTrackingSimulatedProgress(null);
+      return;
+    }
+
+    const baseProgress = getStatusRouteProgress(trackingOrder.status);
+    setTrackingSimulatedProgress(baseProgress);
+
+    if (trackingOrder.status !== 'shipped' && trackingOrder.status !== 'out_for_delivery') {
+      return;
+    }
+
+    let progress = baseProgress;
+    const targetProgress = trackingOrder.status === 'out_for_delivery' ? 0.94 : 0.58;
+    const timer = setInterval(() => {
+      progress = Math.min(targetProgress, progress + 0.02);
+      setTrackingSimulatedProgress(progress);
+      if (progress >= targetProgress) {
+        clearInterval(timer);
+      }
+    }, 2200);
+
+    return () => clearInterval(timer);
+  }, [
+    trackingCoordinates.length,
+    trackingLatestPoint,
+    trackingOrder?.id,
+    trackingOrder?.status,
+    trackingRouteCoordinates,
+  ]);
 
   const pendingReviewItems = useMemo(
     () =>
@@ -316,6 +416,7 @@ export function OrdersScreen() {
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 8), paddingTop: insets.top + 10 }]}
     >
+      <LogoHeader />
       <Text style={[styles.title, { color: theme.colors.text }]}>Order History</Text>
       {showLoader ? <BrandedLoader compact label="Loading transactions..." /> : null}
 
@@ -369,7 +470,7 @@ export function OrdersScreen() {
 
             <Text style={[styles.meta, { color: theme.colors.textMuted }]}>{formatDateTime(order.createdAt)}</Text>
             <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
-              Shipping: {order.shippingMethodName || 'Suki Send Rider'}
+              Shipping: {order.shippingMethodName || 'Not assigned'}
             </Text>
             <Text style={[styles.meta, { color: theme.colors.textMuted }]} numberOfLines={2}>
               Address: {order.deliveryAddress}
@@ -407,6 +508,7 @@ export function OrdersScreen() {
                     setTrackingEvents([]);
                     setTrackingDestination(null);
                     setTrackingRouteCoordinates([]);
+                    setTrackingSimulatedProgress(null);
                     const eventsPromise = fetchOrderTrackingEvents(order.id);
                     const destinationPromise = (async () => {
                       const candidates = getTrackingAddressCandidates(order);
@@ -542,9 +644,10 @@ export function OrdersScreen() {
         setTrackingOrder(null);
         setTrackingDestination(null);
         setTrackingRouteCoordinates([]);
+        setTrackingSimulatedProgress(null);
       }}
       >
-        <View style={styles.modalOverlay}>
+        <ModalBackdrop align="flex-end" overlayOpacity={0.42}>
           <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Track Package</Text>
             <TrackingMap
@@ -552,6 +655,7 @@ export function OrdersScreen() {
               origin={trackingOrigin}
               destination={trackingDestination}
               routeCoordinates={trackingRouteCoordinates}
+              routeColor={trackingOrder?.status === 'completed' ? '#22C55E' : '#DC2626'}
             />
             {!trackingMapCoordinates.length && !trackingDestination ? (
               <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
@@ -575,12 +679,13 @@ export function OrdersScreen() {
                 setTrackingOrder(null);
                 setTrackingDestination(null);
                 setTrackingRouteCoordinates([]);
+                setTrackingSimulatedProgress(null);
               }}
             >
               <Text style={[styles.primaryButtonText, { color: theme.colors.primaryContrast }]}>Close</Text>
             </Pressable>
           </View>
-        </View>
+        </ModalBackdrop>
       </Modal>
 
       <Modal
@@ -592,7 +697,7 @@ export function OrdersScreen() {
           setRefundUploadProgress(null);
         }}
       >
-        <View style={styles.modalOverlay}>
+        <ModalBackdrop align="flex-end" overlayOpacity={0.42}>
           <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Request Refund</Text>
             <Text style={[styles.fieldLabel, { color: theme.colors.textMuted }]}>Reason *</Text>
@@ -707,7 +812,7 @@ export function OrdersScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </ModalBackdrop>
       </Modal>
 
       <Modal
@@ -720,7 +825,7 @@ export function OrdersScreen() {
           setReviewUploadProgress(null);
         }}
       >
-        <View style={styles.modalOverlay}>
+        <ModalBackdrop align="flex-end" overlayOpacity={0.42}>
           <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Write Review</Text>
             <Text style={[styles.helper, { color: theme.colors.textMuted }]}>{reviewItem?.productName}</Text>
@@ -861,7 +966,7 @@ export function OrdersScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </ModalBackdrop>
       </Modal>
 
       <ImagePreviewModal

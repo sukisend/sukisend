@@ -241,6 +241,13 @@ export interface SellerChatThread {
   isClosed: boolean;
 }
 
+export interface SellerChatAttachment {
+  url: string;
+  type: 'image' | 'video';
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
 export interface SellerChatMessage {
   id: string;
   threadId: string;
@@ -248,6 +255,7 @@ export interface SellerChatMessage {
   senderRole: 'customer' | 'admin';
   senderName?: string;
   message: string;
+  attachment?: SellerChatAttachment;
   isRead: boolean;
   createdAt: string;
 }

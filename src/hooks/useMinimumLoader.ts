@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-export function useMinimumLoader(active: boolean, minDurationMs = 6000) {
+export function useMinimumLoader(active: boolean, minDurationMs = 500) {
   const [visible, setVisible] = useState(active);
   const startedAtRef = useRef<number | null>(active ? Date.now() : null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
