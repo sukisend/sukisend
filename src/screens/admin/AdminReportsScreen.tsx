@@ -1,0 +1,307 @@
+import dayjs from 'dayjs';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { DateRangePicker } from '../../components/DateRangePicker';
+import { EmptyState } from '../../components/EmptyState';
+import { MetricCard } from '../../components/MetricCard';
+import { RangeChips } from '../../components/RangeChips';
+import { SectionHeader } from '../../components/SectionHeader';
+import { useBrandAlert } from '../../hooks/useBrandAlert';
+import { useAuth } from '../../providers/AuthProvider';
+import { useTheme } from '../../providers/ThemeProvider';
+import { fetchDashboardSnapshot } from '../../services/adminService';
+import { exportSalesReportPDF, exportSalesReportXLSX } from '../../services/reportService';
+import { DashboardSnapshot, DateRange, SalesRangePreset } from '../../types/models';
+import { formatPHP } from '../../utils/currency';
+
+const RANGE_LABELS: Record<SalesRangePreset, string> = {
+  today: 'Today',
+  yesterday: 'Yesterday',
+  week: 'This Week',
+  month: 'This Month',
+  '3months': 'Last 3 Months',
+  '6months': 'Last 6 Months',
+  year: 'This Year',
+  custom: 'Custom Date Range',
+};
+
+export function AdminReportsScreen() {
+  const { theme } = useTheme();
+  const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
+  const { profile } = useAuth();
+  const [rangePreset, setRangePreset] = useState<SalesRangePreset>('today');
+  const [customRange, setCustomRange] = useState({
+    start: dayjs().startOf('month').format('YYYY-MM-DD'),
+    end: dayjs().format('YYYY-MM-DD'),
+  });
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState<'xlsx' | 'pdf' | null>(null);
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+
+  const rangeIso: DateRange = useMemo(
+    () => ({
+      start: dayjs(customRange.start, 'YYYY-MM-DD').startOf('day').toISOString(),
+      end: dayjs(customRange.end, 'YYYY-MM-DD').endOf('day').toISOString(),
+    }),
+    [customRange],
+  );
+
+  const rangeLabel =
+    rangePreset === 'custom' ? `${customRange.start} to ${customRange.end}` : RANGE_LABELS[rangePreset] ?? 'Custom Date Range';
+
+  const loadReport = async () => {
+    setLoading(true);
+    try {
+      const report = await fetchDashboardSnapshot(rangePreset, rangePreset === 'custom' ? rangeIso : undefined);
+      setSnapshot(report);
+    } catch {
+      setSnapshot(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadReport();
+  }, [rangePreset, rangeIso.start, rangeIso.end]);
+
+  const runExport = async (type: 'xlsx' | 'pdf') => {
+    if (!snapshot) {
+      showAlert({
+        title: 'No data',
+        message: 'Load report data first.',
+        tone: 'info',
+      });
+      return;
+    }
+
+    setExporting(type);
+    try {
+      const payload = {
+        rangeLabel,
+        generatedBy: profile?.fullName ?? 'Admin User',
+        metrics: snapshot.metrics,
+        categorySales: snapshot.categorySales,
+        transactions: snapshot.recentTransactions.filter(
+          (order) => order.paymentStatus === 'paid' && ['delivered', 'completed'].includes(order.status),
+        ),
+      };
+
+      if (type === 'xlsx') {
+        await exportSalesReportXLSX(payload);
+      } else {
+        await exportSalesReportPDF(payload);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Export failed.';
+      showAlert({
+        title: 'Export failed',
+        message,
+        tone: 'error',
+      });
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  return (
+    <ScrollView
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      contentContainerStyle={[styles.content, { paddingBottom: 8 }]}
+    >
+      <SectionHeader title="Analytics & Reports" subtitle="Review performance and export professional reports." />
+
+      <RangeChips value={rangePreset} onChange={setRangePreset} />
+
+      {rangePreset === 'custom' ? (
+        <DateRangePicker startDate={customRange.start} endDate={customRange.end} onChange={setCustomRange} />
+      ) : null}
+
+      {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Building analytics report...</Text> : null}
+
+      {snapshot ? (
+        <>
+          <View style={styles.metricsGrid}>
+            <MetricCard
+              label="Gross Sales"
+              value={formatPHP(snapshot.metrics.grossSales)}
+              accentColor="#22C55E"
+              tintColor={theme.isDark ? 'rgba(34, 197, 94, 0.16)' : 'rgba(34, 197, 94, 0.11)'}
+            />
+            <MetricCard
+              label="Paid Orders"
+              value={`${snapshot.metrics.totalOrders}`}
+              accentColor="#3B82F6"
+              tintColor={theme.isDark ? 'rgba(59, 130, 246, 0.15)' : 'rgba(59, 130, 246, 0.1)'}
+            />
+            <MetricCard
+              label="Profit"
+              value={formatPHP(snapshot.metrics.profit)}
+              accentColor="#14B8A6"
+              tintColor={theme.isDark ? 'rgba(20, 184, 166, 0.16)' : 'rgba(20, 184, 166, 0.1)'}
+            />
+            <MetricCard
+              label="Top Product"
+              value={snapshot.metrics.topSellingProduct}
+              accentColor="#F97316"
+              tintColor={theme.isDark ? 'rgba(249, 115, 22, 0.16)' : 'rgba(249, 115, 22, 0.11)'}
+            />
+          </View>
+
+          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Export Options</Text>
+            <Text style={[styles.cardSub, { color: theme.colors.textMuted }]}>
+              Swipe across cards and pick your preferred output format.
+            </Text>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.exportCardsRow}>
+              <Pressable
+                style={[styles.exportCard, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
+                onPress={() => runExport('pdf')}
+                disabled={Boolean(exporting)}
+              >
+                <Text style={[styles.exportTitle, { color: theme.colors.text }]}>PDF Report</Text>
+                <Text style={[styles.exportSub, { color: theme.colors.textMuted }]}>
+                  Professional layout for management and printable reports.
+                </Text>
+                <Text style={[styles.exportAction, { color: theme.colors.primary }]}>
+                  {exporting === 'pdf' ? 'Exporting...' : 'Export as PDF'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.exportCard, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
+                onPress={() => runExport('xlsx')}
+                disabled={Boolean(exporting)}
+              >
+                <Text style={[styles.exportTitle, { color: theme.colors.text }]}>Excel / XLSX</Text>
+                <Text style={[styles.exportSub, { color: theme.colors.textMuted }]}>
+                  Spreadsheet-friendly file for deeper review and accounting.
+                </Text>
+                <Text style={[styles.exportAction, { color: theme.colors.primary }]}>
+                  {exporting === 'xlsx' ? 'Exporting...' : 'Export as XLSX'}
+                </Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+
+          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Category Breakdown</Text>
+            {snapshot.categorySales.length ? (
+              snapshot.categorySales.map((entry) => (
+                <View
+                  key={entry.category}
+                  style={[styles.entryRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                >
+                  <Text style={[styles.entryLabel, { color: theme.colors.text }]}>{entry.category}</Text>
+                  <Text style={[styles.entryValue, { color: theme.colors.primary }]}>{formatPHP(entry.sales)}</Text>
+                </View>
+              ))
+            ) : (
+              <Text style={[styles.helper, { color: theme.colors.textMuted }]}>No category sales data for this range.</Text>
+            )}
+          </View>
+        </>
+      ) : (
+        !loading && <EmptyState title="No analytics data" subtitle="Run with a different date range or check Supabase records." />
+      )}
+
+      <Pressable
+        style={[styles.refreshButton, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
+        onPress={loadReport}
+      >
+        <Text style={[styles.refreshText, { color: theme.colors.text }]}>Refresh Report</Text>
+      </Pressable>
+
+      <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  content: {
+    gap: 10,
+    padding: 14,
+  },
+  helper: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  metricsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    justifyContent: 'space-between',
+  },
+  card: {
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 8,
+    padding: 12,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  cardSub: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  exportCardsRow: {
+    gap: 10,
+    paddingVertical: 2,
+  },
+  exportCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    minHeight: 130,
+    padding: 12,
+    width: 240,
+  },
+  exportTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  exportSub: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6,
+  },
+  exportAction: {
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 10,
+  },
+  entryRow: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  entryLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  entryValue: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  refreshButton: {
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingVertical: 11,
+  },
+  refreshText: {
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+});
