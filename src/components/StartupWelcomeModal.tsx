@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { Animated, Easing, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme } from '../providers/ThemeProvider';
 import { ModalBackdrop } from './ModalBackdrop';
@@ -11,30 +12,38 @@ interface StartupWelcomeModalProps {
 
 export function StartupWelcomeModal({ visible, onClose }: StartupWelcomeModalProps) {
   const { theme } = useTheme();
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (!visible) return;
+
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.05, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      ]),
+    ).start();
+  }, [visible]);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
-      <ModalBackdrop overlayOpacity={0.38}>
-        <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-          <Pressable
-            style={styles.closeIconButton}
-            onPress={onClose}
-            accessibilityRole="button"
-            accessibilityLabel="Close welcome message"
-          >
-            <Ionicons name="close" size={16} color="#FFFFFF" />
-          </Pressable>
+      <ModalBackdrop overlayOpacity={0.15}>
+        <View style={styles.outerWrap}>
+          <View style={styles.content}>
+            <View style={[styles.logoWrap, { borderColor: 'rgba(255,255,255,0.42)' }]}>
+              <Image source={require('../../assets/suki-send-logo.png')} style={styles.logo} resizeMode="contain" />
+            </View>
 
-          <View style={[styles.logoFrame, { borderColor: theme.colors.border }]}>
-            <Image source={require('../../assets/suki-send-logo.png')} style={styles.logo} resizeMode="contain" />
+            <Pressable onPress={onClose} style={styles.btnWrap}>
+              <Animated.View style={[styles.shopNowBtn, { transform: [{ scale: pulseAnim }] }]}>
+                <View style={styles.shopNowInner}>
+                  <Ionicons name="bag-handle-outline" size={16} color="#FFFFFF" />
+                  <Text style={styles.shopNowText}>SHOP NOW!</Text>
+                  <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+                </View>
+              </Animated.View>
+            </Pressable>
           </View>
-
-          <Text style={[styles.title, { color: theme.colors.text }]} numberOfLines={1}>
-            Welcome to SUKI SEND
-          </Text>
-          <Text style={[styles.message, { color: theme.colors.textMuted }]}>
-            Shop daily essentials with secure COD checkout and doorstep delivery.
-          </Text>
         </View>
       </ModalBackdrop>
     </Modal>
@@ -42,54 +51,60 @@ export function StartupWelcomeModal({ visible, onClose }: StartupWelcomeModalPro
 }
 
 const styles = StyleSheet.create({
-  card: {
-    alignSelf: 'center',
-    borderRadius: 18,
-    borderWidth: 1,
-    maxWidth: 340,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    width: '90%',
-  },
-  closeIconButton: {
-    alignItems: 'center',
-    backgroundColor: '#DC2626',
-    borderRadius: 999,
-    height: 26,
+  outerWrap: {
+    flex: 1,
     justifyContent: 'center',
-    position: 'absolute',
-    right: 10,
-    top: 10,
-    width: 26,
-    zIndex: 1,
-  },
-  logoFrame: {
-    alignSelf: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+  },
+  content: {
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  logoWrap: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 28,
     borderWidth: 1,
-    height: 84,
     justifyContent: 'center',
-    width: 148,
+    marginBottom: -4,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    shadowColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
   },
   logo: {
-    height: 58,
-    width: 124,
+    height: 134,
+    width: 260,
   },
-  title: {
-    fontSize: 20,
-    fontWeight: '900',
-    lineHeight: 24,
-    marginTop: 10,
-    textAlign: 'center',
+  btnWrap: {
+    borderWidth: 0,
+    marginTop: 0,
+    outlineColor: 'transparent',
+    outlineStyle: 'none',
+    outlineWidth: 0,
+    width: 280,
   },
-  message: {
-    fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 17,
-    marginTop: 8,
-    textAlign: 'center',
+  shopNowBtn: {
+    borderRadius: 999,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  shopNowInner: {
+    alignItems: 'center',
+    backgroundColor: '#FF6B00',
+    borderRadius: 999,
+    borderWidth: 0,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    paddingVertical: 14,
+  },
+  shopNowText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
 });

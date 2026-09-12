@@ -15,6 +15,7 @@ export type CustomerStackParamList = {
   Checkout:
     | {
         selectedKeys?: string[];
+        freeShippingUnlocked?: boolean;
       }
     | undefined;
   ChatSeller: undefined;
@@ -29,8 +30,9 @@ export type AdminTabsParamList = {
   Dashboard: undefined;
   Products: undefined;
   Transactions: undefined;
-  Inbox: undefined;
+  Inbox: { openCustomerId?: string } | undefined;
   Reports: undefined;
+  AdminSettings: undefined;
   AdminAccount: undefined;
 };
 

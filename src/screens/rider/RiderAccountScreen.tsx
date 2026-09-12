@@ -1,7 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { BrandLogoCard } from '../../components/BrandLogoCard';
-import { ThemeModeToggle } from '../../components/ThemeModeToggle';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 
@@ -21,14 +20,6 @@ export function RiderAccountScreen() {
         <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Role: {profile?.role}</Text>
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Appearance</Text>
-        <View style={styles.row}>
-          <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Dark Mode</Text>
-          <ThemeModeToggle compact />
-        </View>
-      </View>
-
       <View style={[styles.card, styles.signOutCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
         <BrandLogoCard compact title="Secure Session" subtitle="Sign out when your shift ends." />
         <Pressable style={[styles.signOutButton, { backgroundColor: theme.colors.danger }]} onPress={() => signOut()}>
@@ -46,7 +37,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 22,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   brandCard: {
     marginTop: 12,
@@ -60,7 +51,7 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   meta: {
     fontSize: 13,
@@ -81,7 +72,7 @@ const styles = StyleSheet.create({
   signOutText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: '600',
     textAlign: 'center',
   },
 });

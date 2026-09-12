@@ -119,7 +119,6 @@ export async function exportSalesReportXLSX(payload: ExportPayload) {
   );
 }
 
-export const exportSalesReportCSV = exportSalesReportXLSX;
 
 function buildReportHtml(payload: ExportPayload, logoSrc: string) {
   const transactionRows = payload.transactions.length

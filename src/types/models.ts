@@ -50,6 +50,7 @@ export interface ProductVariant {
   value: string;
   priceDelta: number;
   stockOverride?: number;
+  imageUrl?: string;
   isActive: boolean;
 }
 
@@ -57,6 +58,7 @@ export interface Category {
   id: string;
   name: string;
   icon?: string;
+  imageUrl?: string;
 }
 
 export interface Product {
@@ -139,6 +141,16 @@ export interface AppProfile {
   email: string;
   fullName: string;
   role: Exclude<UserRole, 'guest'>;
+  username: string;
+  sitio: string;
+  barangay: string;
+  municipality: string;
+  province: string;
+  secretQuestion: string;
+  secretAnswer: string;
+  contactNumber: string;
+  birthdate: string;
+  avatarUrl: string;
 }
 
 export interface CustomerAddress {
@@ -164,9 +176,37 @@ export interface ShippingMethod {
   name: string;
   description?: string;
   baseFee: number;
+  ratePerKm: number;
   etaMinDays?: number;
   etaMaxDays?: number;
   isActive: boolean;
+}
+
+export interface Coupon {
+  id: string;
+  code: string;
+  description: string;
+  discountType: 'percent' | 'fixed';
+  discountValue: number;
+  minOrder: number;
+  maxDiscount?: number;
+  usageLimit?: number;
+  usedCount: number;
+  isActive: boolean;
+  startsAt?: string;
+  expiresAt?: string;
+}
+
+export interface CouponValidation {
+  valid: boolean;
+  error?: string;
+  couponId?: string;
+  code?: string;
+  description?: string;
+  discountType?: 'percent' | 'fixed';
+  discountValue?: number;
+  discountAmount?: number;
+  maxDiscount?: number;
 }
 
 export interface OrderTrackingEvent {
@@ -200,15 +240,6 @@ export interface ProductReview {
   createdAt: string;
 }
 
-export interface RiderReview {
-  id: string;
-  orderId: string;
-  customerId: string;
-  rating: number;
-  comment?: string;
-  createdAt: string;
-}
-
 export type RestrictionSeverity = 'warning' | 'restricted' | 'banned';
 
 export interface CustomerRestriction {
@@ -228,6 +259,8 @@ export interface CustomerModerationUser {
   totalOrders: number;
   pendingOrders: number;
   activeRestriction?: CustomerRestriction;
+  avatarUrl?: string;
+  contactNumber?: string;
 }
 
 export interface SellerChatThread {
@@ -235,6 +268,8 @@ export interface SellerChatThread {
   customerId: string;
   customerName: string;
   customerEmail?: string;
+  customerAvatarUrl?: string;
+  contactNumber?: string;
   lastMessageAt: string;
   lastMessage?: string;
   unreadCount: number;
@@ -258,19 +293,6 @@ export interface SellerChatMessage {
   attachment?: SellerChatAttachment;
   isRead: boolean;
   createdAt: string;
-}
-
-export interface RefundRequest {
-  id: string;
-  orderId: string;
-  customerId: string;
-  status: 'open' | 'approved' | 'rejected' | 'cancelled';
-  reason: string;
-  note?: string;
-  evidenceUrls: string[];
-  requestedAt: string;
-  resolvedAt?: string;
-  adminNote?: string;
 }
 
 export interface SalesMetrics {

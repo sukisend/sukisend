@@ -19,20 +19,22 @@ export function RiderNavigator() {
       screenOptions={({ route }) => ({
         headerStyle: { backgroundColor: theme.colors.surface },
         headerTintColor: theme.colors.text,
-        headerTitleStyle: { fontWeight: '800' },
+        headerTitleStyle: { fontWeight: '600' },
+        headerShadowVisible: false,
         tabBarActiveTintColor: theme.colors.primary,
         tabBarInactiveTintColor: theme.colors.textMuted,
         tabBarStyle: {
           backgroundColor: theme.colors.surface,
-          borderTopColor: theme.colors.border,
-          height: 62 + bottomInset,
+          borderTopColor: 'transparent',
+          height: 58 + bottomInset,
           paddingBottom: bottomInset,
-          paddingTop: 8,
+          paddingTop: 6,
         },
         tabBarHideOnKeyboard: true,
         tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '600',
+          fontSize: 10,
+          fontWeight: '500',
+          letterSpacing: -0.2,
         },
         tabBarIcon: ({ color, size }) => {
           const iconMap: Record<keyof RiderTabsParamList, string> = {

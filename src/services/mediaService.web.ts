@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import type { PickAndUploadChatMediaResult } from './mediaService';
 
 interface PickAndUploadImagesOptions {
-  bucket: 'product-media' | 'review-media';
+  bucket: 'product-media' | 'review-media' | 'profile-media' | 'banner-media';
   folder: string;
   maxImages?: number;
   resizeWidth?: number;
@@ -15,6 +15,13 @@ interface PickAndUploadImagesOptions {
 interface PickAndUploadChatMediaOptions {
   folder: string;
   maxBytes?: number;
+}
+
+interface PickAndUploadAvatarOptions {
+  folder: string;
+  resizeWidth?: number;
+  compress?: number;
+  targetBytes?: number;
 }
 
 const DEFAULT_TARGET_BYTES = 1_000_000;
@@ -209,6 +216,44 @@ export async function pickAndUploadChatMedia(
         });
       } catch (err) {
         reject(err);
+      }
+    };
+
+    input.click();
+  });
+}
+
+export function pickAndUploadAvatar(options: PickAndUploadAvatarOptions): Promise<string | null> {
+  const resizeWidth = options.resizeWidth ?? 500;
+  const compress = options.compress ?? 0.8;
+  const targetBytes = options.targetBytes ?? 2_000_000;
+
+  return new Promise((resolve, reject) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/jpeg,image/png,image/webp';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    input.onchange = async () => {
+      try {
+        const file = input.files?.[0];
+        if (!file) {
+          resolve(null);
+          return;
+        }
+
+        if (!file.type.startsWith('image/')) {
+          throw new Error('Only image files are supported.');
+        }
+
+        const blob = await optimizeFileToWebPBlob(file, resizeWidth, compress, targetBytes, 0.6);
+        const url = await uploadBlob(blob, 'profile-media', options.folder, 'image/webp', 'webp');
+        resolve(url);
+      } catch (err) {
+        reject(err);
+      } finally {
+        document.body.removeChild(input);
       }
     };
 

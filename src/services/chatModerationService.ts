@@ -22,7 +22,7 @@ interface PaginationInput {
   pageSize?: number;
 }
 
-export interface PaginatedRows<T> {
+interface PaginatedRows<T> {
   rows: T[];
   page: number;
   pageSize: number;
@@ -101,6 +101,8 @@ function mapThreadRow(row: any): SellerChatThread {
     customerId: row.customer_id,
     customerName: row.customer_name ?? 'Customer',
     customerEmail: row.customer_email ?? undefined,
+    customerAvatarUrl: row.customer_avatar_url ?? row.avatar_url ?? undefined,
+    contactNumber: row.contact_number ?? undefined,
     lastMessageAt: row.last_message_at ?? row.updated_at ?? new Date().toISOString(),
     lastMessage: parsedLastMessage,
     unreadCount: Number(row.unread_count ?? 0),
@@ -146,6 +148,8 @@ function mapCustomerRow(row: any): CustomerModerationUser {
     totalOrders: Number(row.total_orders ?? 0),
     pendingOrders: Number(row.pending_orders ?? 0),
     activeRestriction,
+    avatarUrl: row.avatar_url ?? undefined,
+    contactNumber: row.contact_number ?? undefined,
   } satisfies CustomerModerationUser;
 }
 
@@ -306,7 +310,7 @@ export async function markSellerChatThreadRead(threadId: string) {
   }
 }
 
-export async function fetchAdminSellerThreads(): Promise<SellerChatThread[]> {
+async function fetchAdminSellerThreads(): Promise<SellerChatThread[]> {
   if (!supabase) {
     return [];
   }
@@ -431,7 +435,7 @@ export async function fetchCustomerUnreadSellerMessagesCount(customerId: string)
   return Number(count ?? 0);
 }
 
-export async function fetchAdminCustomers(): Promise<CustomerModerationUser[]> {
+async function fetchAdminCustomers(): Promise<CustomerModerationUser[]> {
   if (!supabase) {
     return [];
   }
@@ -537,6 +541,19 @@ export async function adminLiftCustomerRestriction(restrictionId: string, reason
   const { error } = await supabase.rpc('admin_lift_customer_restriction', {
     p_restriction_id: restrictionId,
     p_reason: reason ?? null,
+  });
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+export async function deleteSellerChatThread(threadId: string) {
+  if (!supabase) {
+    throw new Error('Chat requires Supabase.');
+  }
+
+  const { error } = await supabase.rpc('admin_delete_seller_chat_thread', {
+    p_thread_id: threadId,
   });
   if (error) {
     throw new Error(error.message);

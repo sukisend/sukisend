@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 import { useTheme } from '../providers/ThemeProvider';
-import { getStoreCoordinates } from '../services/geocodingService';
+import { getWebMapStyleDefinition } from './webMapStyle';
 
 interface Coordinate {
   latitude: number;
@@ -16,7 +16,11 @@ interface AddressPinMapProps {
   height?: number;
 }
 
-const MAP_STYLE_URL = process.env.EXPO_PUBLIC_MAP_STYLE_URL ?? 'https://demotiles.maplibre.org/style.json';
+const PHILIPPINES_CENTER: Coordinate = { latitude: 12.8797, longitude: 121.774 };
+const PHILIPPINES_BOUNDS: [[number, number], [number, number]] = [
+  [116.7, 4.5],
+  [126.6, 21.3],
+];
 
 function isValidCoordinate(point: Coordinate | null | undefined): point is Coordinate {
   if (!point) {
@@ -51,8 +55,7 @@ export function AddressPinMap({ value, onChange, height = 200 }: AddressPinMapPr
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fallback = useMemo(() => getStoreCoordinates(), []);
-  const activePoint = isValidCoordinate(value) ? value : fallback;
+  const activePoint = useMemo(() => (isValidCoordinate(value) ? value : null), [value]);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,14 +70,29 @@ export function AddressPinMap({ value, onChange, height = 200 }: AddressPinMapPr
         maplibreRef.current = module;
         const map = new module.Map({
           container: mapContainerRef.current,
-          style: MAP_STYLE_URL,
-          center: [activePoint.longitude, activePoint.latitude],
-          zoom: 13,
+          style: getWebMapStyleDefinition(),
+          center: [PHILIPPINES_CENTER.longitude, PHILIPPINES_CENTER.latitude],
+          zoom: 4.8,
           attributionControl: { compact: true },
         });
 
         mapRef.current = map;
         map.on('load', () => {
+          if (activePoint) {
+            map.easeTo({
+              center: [activePoint.longitude, activePoint.latitude],
+              duration: 380,
+              zoom: 13,
+            });
+          } else {
+            map.fitBounds(PHILIPPINES_BOUNDS, { padding: 24, duration: 0 });
+          }
+
+          if (!cancelled) {
+            setLoading(false);
+          }
+        });
+        map.on('error', () => {
           if (!cancelled) {
             setLoading(false);
           }
@@ -115,6 +133,13 @@ export function AddressPinMap({ value, onChange, height = 200 }: AddressPinMapPr
       return;
     }
 
+    if (!activePoint) {
+      markerRef.current?.remove?.();
+      markerRef.current = null;
+      map.fitBounds(PHILIPPINES_BOUNDS, { padding: 24, duration: 380 });
+      return;
+    }
+
     markerRef.current?.remove?.();
     markerRef.current = new module.Marker({
       element: createPinElement(),
@@ -136,7 +161,7 @@ export function AddressPinMap({ value, onChange, height = 200 }: AddressPinMapPr
       duration: 380,
       zoom: Math.max(map.getZoom?.() ?? 13, 13),
     });
-  }, [activePoint.latitude, activePoint.longitude, onChange]);
+  }, [activePoint?.latitude, activePoint?.longitude, onChange]);
 
   if (error) {
     return (

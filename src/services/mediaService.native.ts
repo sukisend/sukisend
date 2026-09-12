@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import type { PickAndUploadChatMediaResult } from './mediaService';
 
 interface PickAndUploadImagesOptions {
-  bucket: 'product-media' | 'review-media';
+  bucket: 'product-media' | 'review-media' | 'profile-media' | 'banner-media';
   folder: string;
   maxImages?: number;
   resizeWidth?: number;
@@ -19,6 +19,13 @@ interface PickAndUploadImagesOptions {
 interface PickAndUploadChatMediaOptions {
   folder: string;
   maxBytes?: number;
+}
+
+interface PickAndUploadAvatarOptions {
+  folder: string;
+  resizeWidth?: number;
+  compress?: number;
+  targetBytes?: number;
 }
 
 const DEFAULT_TARGET_BYTES = 1_000_000;
@@ -231,4 +238,28 @@ export async function pickAndUploadChatMedia(
     mimeType: 'image/webp',
     sizeBytes: optimized.sizeBytes,
   };
+}
+
+export async function pickAndUploadAvatar(options: PickAndUploadAvatarOptions): Promise<string | null> {
+  const compress = options.compress ?? 0.8;
+  const resizeWidth = options.resizeWidth ?? 500;
+  const targetBytes = options.targetBytes ?? 2_000_000;
+
+  await ensureGalleryPermission();
+
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    allowsMultipleSelection: false,
+    quality: 1,
+    aspect: [1, 1],
+    allowsEditing: true,
+  });
+
+  if (result.canceled || !result.assets.length) {
+    return null;
+  }
+
+  const asset = result.assets[0];
+  const optimizedUri = await optimizeImageUri(asset, resizeWidth, compress, targetBytes);
+  return uploadFileUri(optimizedUri, 'profile-media', options.folder, 'image/webp', 'webp');
 }

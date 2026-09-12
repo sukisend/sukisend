@@ -9,7 +9,6 @@ import { EmptyState } from '../../components/EmptyState';
 import { LogoHeader } from '../../components/LogoHeader';
 import { MetricCard } from '../../components/MetricCard';
 import { RangeChips } from '../../components/RangeChips';
-import { SectionHeader } from '../../components/SectionHeader';
 import { useMinimumLoader } from '../../hooks/useMinimumLoader';
 import { useTheme } from '../../providers/ThemeProvider';
 import { fetchDashboardSnapshot } from '../../services/adminService';
@@ -56,10 +55,17 @@ export function AdminDashboardScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
-      contentContainerStyle={[styles.content, { paddingBottom: 8 }]}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
     >
       <LogoHeader />
-      <SectionHeader title="Admin Dashboard" subtitle="Inventory, sales, and COD performance in one view." />
+
+      <View style={[styles.greetingCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.greetingTitle, { color: theme.colors.text }]}>Admin Dashboard</Text>
+        <Text style={[styles.greetingSub, { color: theme.colors.textMuted }]}>
+          Inventory, sales, and COD performance at a glance.
+        </Text>
+      </View>
 
       <RangeChips value={rangePreset} onChange={setRangePreset} />
 
@@ -71,57 +77,61 @@ export function AdminDashboardScreen() {
 
       {snapshot ? (
         <>
+          {/* ─── KPI Cards ─── */}
           <View style={styles.metricsGrid}>
             <MetricCard
               label="Gross Sales"
               value={formatPHP(snapshot.metrics.grossSales)}
-              accentColor="#22C55E"
-              tintColor={theme.isDark ? 'rgba(34, 197, 94, 0.16)' : 'rgba(34, 197, 94, 0.12)'}
+              accentColor="#E06D3B"
             />
             <MetricCard
               label="Paid Orders"
               value={`${snapshot.metrics.totalOrders}`}
-              accentColor="#3B82F6"
-              tintColor={theme.isDark ? 'rgba(59, 130, 246, 0.15)' : 'rgba(59, 130, 246, 0.1)'}
+              accentColor="#E06D3B"
             />
             <MetricCard
               label="Profit"
               value={formatPHP(snapshot.metrics.profit)}
-              accentColor="#14B8A6"
-              tintColor={theme.isDark ? 'rgba(20, 184, 166, 0.16)' : 'rgba(20, 184, 166, 0.11)'}
+              accentColor="#E06D3B"
             />
             <MetricCard
-              label="Low Stock Items"
+              label="Low Stock"
               value={`${snapshot.metrics.lowStockCount}`}
-              accentColor="#F59E0B"
-              tintColor={theme.isDark ? 'rgba(245, 158, 11, 0.18)' : 'rgba(245, 158, 11, 0.12)'}
+              accentColor="#E06D3B"
             />
             <MetricCard
               label="Pending"
               value={`${snapshot.metrics.pendingOrders ?? 0}`}
-              accentColor="#F97316"
-              tintColor={theme.isDark ? 'rgba(249, 115, 22, 0.16)' : 'rgba(249, 115, 22, 0.11)'}
+              accentColor="#E06D3B"
             />
             <MetricCard
               label="Outgoing"
               value={`${snapshot.metrics.outgoingOrders ?? 0}`}
-              accentColor="#A855F7"
-              tintColor={theme.isDark ? 'rgba(168, 85, 247, 0.15)' : 'rgba(168, 85, 247, 0.1)'}
+              accentColor="#E06D3B"
             />
           </View>
 
-          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Top Selling Products</Text>
+          {/* ─── Top Selling Products ─── */}
+          <View style={[styles.card, { backgroundColor: theme.colors.card }, theme.shadow.card]}>
+            <View style={styles.cardHeader}>
+              <Ionicons name="trophy-outline" size={16} color={theme.colors.primary} />
+              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Top Selling Products</Text>
+            </View>
             {snapshot.topProducts.length ? (
-              snapshot.topProducts.map((item) => (
+              snapshot.topProducts.map((item, idx) => (
                 <View
                   key={item.productId}
-                  style={[styles.topProductRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                  style={[styles.topProductRow, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
                 >
+                  <View style={[styles.rankBadge, { backgroundColor: idx < 3 ? theme.colors.primary : theme.colors.surfaceAlt }]}>
+                    <Text style={[styles.rankText, { color: idx < 3 ? theme.colors.primaryContrast : theme.colors.textMuted }]}>
+                      #{idx + 1}
+                    </Text>
+                  </View>
                   {item.imageUrl ? (
                     <Image source={{ uri: item.imageUrl }} style={styles.topProductImage} />
                   ) : (
-                    <View style={[styles.topProductFallback, { backgroundColor: theme.colors.surfaceAlt }]}>
+                    <View style={[styles.topProductFallback, { backgroundColor: theme.colors.surface }]}>
                       <Ionicons name="cube-outline" size={16} color={theme.colors.textMuted} />
                     </View>
                   )}
@@ -139,39 +149,63 @@ export function AdminDashboardScreen() {
             )}
           </View>
 
-          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Sales by Category</Text>
+          {/* ─── Sales by Category ─── */}
+          <View style={[styles.card, { backgroundColor: theme.colors.card }, theme.shadow.card]}>
+            <View style={styles.cardHeader}>
+              <Ionicons name="pricetag-outline" size={16} color={theme.colors.primary} />
+              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Sales by Category</Text>
+            </View>
             {snapshot.categorySales.length ? (
-              snapshot.categorySales.map((entry) => (
-                <View
-                  key={entry.category}
-                  style={[styles.listRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
-                >
-                  <Text style={[styles.listLabel, { color: theme.colors.text }]}>{entry.category}</Text>
-                  <Text style={[styles.listValue, { color: theme.colors.primary }]}>{formatPHP(entry.sales)}</Text>
-                </View>
-              ))
+              snapshot.categorySales.map((entry) => {
+                const maxSale = Math.max(...snapshot.categorySales.map((e) => e.sales));
+                const barWidth = maxSale > 0 ? (entry.sales / maxSale) * 100 : 0;
+                return (
+                  <View key={entry.category} style={styles.categoryEntry}>
+                    <View style={styles.categoryLabelRow}>
+                      <Text style={[styles.listLabel, { color: theme.colors.text }]}>{entry.category}</Text>
+                      <Text style={[styles.listValue, { color: theme.colors.primary }]}>{formatPHP(entry.sales)}</Text>
+                    </View>
+                    <View style={[styles.barTrack, { backgroundColor: theme.colors.surfaceAlt }]}>
+                      <View style={[styles.barFill, { backgroundColor: theme.colors.primary, width: `${barWidth}%` }]} />
+                    </View>
+                  </View>
+                );
+              })
             ) : (
               <Text style={[styles.helper, { color: theme.colors.textMuted }]}>No category data in selected range.</Text>
             )}
           </View>
 
-          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Low / Out of Stock Alerts</Text>
+          {/* ─── Low / Out of Stock Alerts ─── */}
+          <View style={[styles.card, { backgroundColor: theme.colors.card }, theme.shadow.card]}>
+            <View style={styles.cardHeader}>
+              <Ionicons name="alert-circle-outline" size={16} color={theme.colors.danger} />
+              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Stock Alerts</Text>
+            </View>
             {snapshot.lowStockItems.length ? (
               snapshot.lowStockItems.map((item) => (
                 <View
                   key={item.id}
-                  style={[styles.listRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                  style={[styles.alertRow, { backgroundColor: item.stock <= 0 ? theme.colors.dangerBg : theme.colors.warningBg, borderColor: theme.colors.border }]}
                 >
+                  <Ionicons
+                    name={item.stock <= 0 ? 'close-circle-outline' : 'warning-outline'}
+                    size={15}
+                    color={item.stock <= 0 ? theme.colors.danger : theme.colors.warning}
+                  />
                   <Text style={[styles.listLabel, { color: theme.colors.text }]}>{item.name}</Text>
-                  <Text style={[styles.listValue, { color: item.stock <= 0 ? theme.colors.danger : theme.colors.warning }]}>
-                    {item.stock <= 0 ? 'Out of stock' : `${item.stock} left`}
-                  </Text>
+                  <View style={[styles.stockPill, { backgroundColor: item.stock <= 0 ? theme.colors.danger : theme.colors.warning }]}>
+                    <Text style={[styles.stockPillText, { color: '#FFFFFF' }]}>
+                      {item.stock <= 0 ? 'Out' : `${item.stock} left`}
+                    </Text>
+                  </View>
                 </View>
               ))
             ) : (
-              <Text style={[styles.helper, { color: theme.colors.textMuted }]}>All inventory levels are healthy.</Text>
+              <View style={[styles.healthyRow, { backgroundColor: theme.colors.successBg }]}>
+                <Ionicons name="checkmark-circle-outline" size={16} color={theme.colors.success} />
+                <Text style={[styles.helper, { color: theme.colors.success }]}>All inventory levels are healthy.</Text>
+              </View>
             )}
           </View>
         </>
@@ -180,9 +214,10 @@ export function AdminDashboardScreen() {
       )}
 
       <Pressable
-        style={[styles.refreshButton, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
+        style={[styles.refreshButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
         onPress={loadData}
       >
+        <Ionicons name="refresh-outline" size={15} color={theme.colors.textMuted} />
         <Text style={[styles.refreshText, { color: theme.colors.text }]}>Refresh Dashboard</Text>
       </Pressable>
     </ScrollView>
@@ -194,58 +229,83 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    gap: 10,
+    gap: 12,
     padding: 14,
+    paddingBottom: 24,
   },
-  helper: {
-    fontSize: 13,
+  greetingCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  greetingTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  greetingSub: {
+    fontSize: 12,
     fontWeight: '500',
+    marginTop: 2,
   },
   metricsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
-    justifyContent: 'space-between',
   },
   card: {
     borderRadius: 14,
-    borderWidth: 1,
-    padding: 12,
+    padding: 14,
     rowGap: 8,
   },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  listRow: {
+  cardHeader: {
     alignItems: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    gap: 6,
+    marginBottom: 4,
+  },
+  cardTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  helper: {
+    fontSize: 13,
+    fontWeight: '500',
+    textAlign: 'center',
+    paddingVertical: 6,
   },
   topProductRow: {
     alignItems: 'center',
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 10,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
+  rankBadge: {
+    alignItems: 'center',
+    borderRadius: 8,
+    height: 22,
+    justifyContent: 'center',
+    minWidth: 22,
+    paddingHorizontal: 4,
+  },
+  rankText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
   topProductImage: {
     borderRadius: 8,
-    height: 42,
-    width: 42,
+    height: 38,
+    width: 38,
   },
   topProductFallback: {
     alignItems: 'center',
     borderRadius: 8,
-    height: 42,
+    height: 38,
     justifyContent: 'center',
-    width: 42,
+    width: 38,
   },
   topProductInfo: {
     flex: 1,
@@ -253,28 +313,73 @@ const styles = StyleSheet.create({
   },
   topProductMeta: {
     fontSize: 11,
-    fontWeight: '600',
-    marginTop: 2,
+    fontWeight: '500',
+    marginTop: 1,
   },
   listLabel: {
     flex: 1,
     fontSize: 13,
-    fontWeight: '600',
-    paddingRight: 10,
+    fontWeight: '500',
+    paddingRight: 8,
   },
   listValue: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
-  refreshButton: {
+  categoryEntry: {
+    gap: 4,
+  },
+  categoryLabelRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+  },
+  barTrack: {
+    borderRadius: 999,
+    height: 5,
+    overflow: 'hidden',
+  },
+  barFill: {
+    borderRadius: 999,
+    height: '100%',
+  },
+  alertRow: {
+    alignItems: 'center',
     borderRadius: 10,
     borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  stockPill: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  stockPillText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  healthyRow: {
+    alignItems: 'center',
+    borderRadius: 10,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  refreshButton: {
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
     marginTop: 4,
     paddingVertical: 12,
   },
   refreshText: {
     fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
+    fontWeight: '600',
   },
 });

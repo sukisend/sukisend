@@ -1,12 +1,14 @@
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { BrandAlertModal } from '../../components/BrandAlertModal';
-import { BrandLogoCard } from '../../components/BrandLogoCard';
+import { EmptyState } from '../../components/EmptyState';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { AdminTabsParamList } from '../../navigation/types';
+import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 import {
@@ -35,7 +37,12 @@ export function AdminAccountScreen() {
   const [search, setSearch] = useState('');
   const [customerPage, setCustomerPage] = useState(1);
   const [customerTotal, setCustomerTotal] = useState(0);
+  const [sortByPending, setSortByPending] = useState(true);
   const customerPageCount = Math.max(1, Math.ceil(customerTotal / CUSTOMER_PAGE_SIZE));
+
+  const sortedCustomers = sortByPending
+    ? [...customers].sort((a, b) => b.pendingOrders - a.pendingOrders)
+    : customers;
 
   const loadCustomers = async (page = customerPage, keyword = search) => {
     setLoading(true);
@@ -122,6 +129,11 @@ export function AdminAccountScreen() {
         try {
           await adminDeleteCustomerAccount(customer.id, 'Removed by admin for severe policy violation');
           await loadCustomers();
+          showAlert({
+            title: 'Account deleted',
+            message: `${customer.fullName} has been permanently removed.`,
+            tone: 'success',
+          });
         } catch (error) {
           showAlert({
             title: 'Delete failed',
@@ -134,153 +146,242 @@ export function AdminAccountScreen() {
   };
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} contentContainerStyle={styles.content}>
-      <Text style={[styles.title, { color: theme.colors.text }]}>Admin Account</Text>
-      <BrandLogoCard title="SUKI SEND Admin" subtitle="Manage store operations securely." style={styles.brandCard} />
+    <ScrollView
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
+      {/* ─── Profile Card ─── */}
+      <View style={[styles.profileCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, theme.shadow.card]}>
+        <View style={[styles.avatarCircle, { backgroundColor: `${theme.colors.primary}15` }]}>
+          <Ionicons name="person" size={28} color={theme.colors.primary} />
+        </View>
+        <Text style={[styles.profileName, { color: theme.colors.text }]}>{profile?.fullName}</Text>
+        <Text style={[styles.profileRole, { color: theme.colors.primary }]}>{profile?.role === 'admin' ? 'Administrator' : profile?.role}</Text>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Profile</Text>
-        <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Name: {profile?.fullName}</Text>
-        <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Email: {profile?.email}</Text>
-        <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Role: {profile?.role}</Text>
+        <View style={[styles.profileDivider, { backgroundColor: theme.colors.border }]} />
+
+        <View style={styles.profileRow}>
+          <Ionicons name="person-outline" size={14} color={theme.colors.textMuted} />
+          <Text style={[styles.profileMeta, { color: theme.colors.textMuted }]} numberOfLines={1}>{profile?.email?.split('@')[0] ?? ''}</Text>
+        </View>
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Messages & Inbox</Text>
-        <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Open the dedicated inbox page for cleaner message management and pagination.</Text>
+      {/* ─── Quick Actions ─── */}
+      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, theme.shadow.card]}>
+        <View style={styles.cardHeader}>
+          <Ionicons name="chatbubbles-outline" size={16} color={theme.colors.primary} />
+          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Quick Actions</Text>
+        </View>
         <Pressable
-          style={[styles.inboxButton, { backgroundColor: theme.colors.primary }]}
+          style={[styles.actionRow, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
           onPress={() => navigation.navigate('Inbox')}
         >
-          <Text style={[styles.inboxButtonText, { color: theme.colors.primaryContrast }]}>Open Seller Inbox</Text>
+          <View style={styles.actionRowLeft}>
+            <Ionicons name="mail-unread-outline" size={18} color={theme.colors.primary} />
+            <View>
+              <Text style={[styles.actionLabel, { color: theme.colors.text }]}>Seller Inbox</Text>
+              <Text style={[styles.actionSub, { color: theme.colors.textMuted }]}>View customer messages</Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={theme.colors.textMuted} />
         </Pressable>
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Customer Moderation</Text>
-        <TextInput
-          value={search}
-          onChangeText={(value) => {
-            setSearch(value);
-            setCustomerPage(1);
-          }}
-          placeholder="Search by name, email, or user id..."
-          placeholderTextColor={theme.colors.textMuted}
-          style={[styles.searchInput, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-        />
-        {loading ? <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Loading customers...</Text> : null}
+      {/* ─── Customer Moderation ─── */}
+      <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, theme.shadow.card]}>
+        <View style={styles.cardHeader}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+            <Ionicons name="shield-checkmark-outline" size={16} color={theme.colors.primary} />
+            <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Customer Moderation</Text>
+          </View>
+          {customers.length > 0 ? (
+            <Pressable
+              style={[styles.sortToggle, { borderColor: sortByPending ? theme.colors.primary : theme.colors.border, backgroundColor: sortByPending ? `${theme.colors.primary}15` : theme.colors.surface }]}
+              onPress={() => setSortByPending((prev) => !prev)}
+            >
+              <Ionicons name={sortByPending ? 'arrow-down' : 'swap-vertical'} size={12} color={sortByPending ? theme.colors.primary : theme.colors.textMuted} />
+              <Text style={[styles.sortToggleText, { color: sortByPending ? theme.colors.primary : theme.colors.textMuted }]}>
+                {sortByPending ? 'Pending' : 'Sort by Pending'}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+        <View style={[styles.searchWrap, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+          <Ionicons name="search-outline" size={15} color={theme.colors.textMuted} />
+          <TextInput
+            value={search}
+            onChangeText={(value) => {
+              setSearch(value);
+              setCustomerPage(1);
+            }}
+            placeholder="Search by name or username..."
+            placeholderTextColor={theme.colors.textMuted}
+            style={[styles.searchInput, { color: theme.colors.text, outlineWidth: 0 }]}
+          />
+        </View>
+
+        {loading ? (
+          <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Loading customers...</Text>
+        ) : null}
+
         {!loading && customers.length === 0 ? (
           <Text style={[styles.meta, { color: theme.colors.textMuted }]}>No customers found.</Text>
         ) : (
-          <View style={styles.sectionList}>
-            {customers.map((customer) => (
+          <View style={styles.customerList}>
+            {sortedCustomers.map((customer) => (
               <View
                 key={customer.id}
                 style={[styles.customerCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
               >
-                <Text style={[styles.customerName, { color: theme.colors.text }]}>{customer.fullName}</Text>
-                <Text style={[styles.meta, { color: theme.colors.textMuted }]} numberOfLines={1}>
-                  {customer.email || customer.id}
-                </Text>
-                <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Orders: {customer.totalOrders} | Ongoing: {customer.pendingOrders}</Text>
-                {customer.activeRestriction ? (
-                  <Text style={[styles.meta, { color: theme.colors.warning ?? '#F59E0B' }]}>
-                    Active: {SEVERITY_LABEL[customer.activeRestriction.severity]}{' '}
-                    {customer.activeRestriction.endsAt
-                      ? `until ${formatDateTime(customer.activeRestriction.endsAt)}`
-                      : '(Permanent)'}
-                  </Text>
-                ) : (
-                  <Text style={[styles.meta, { color: theme.colors.success }]}>No active restrictions</Text>
-                )}
-                <View style={styles.actionsRow}>
-                  <Pressable
-                    style={[styles.actionBtn, { borderColor: theme.colors.border }]}
-                    onPress={() => applyRestriction(customer, 'warning')}
-                  >
-                    <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Warn</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.actionBtn, { borderColor: theme.colors.border }]}
-                    onPress={() => applyRestriction(customer, 'restricted')}
-                  >
-                    <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Restrict</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.actionBtn, { borderColor: theme.colors.border }]}
-                    onPress={() => applyRestriction(customer, 'banned')}
-                  >
-                    <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Ban</Text>
-                  </Pressable>
+                <View style={styles.customerTop}>
+                  {customer.avatarUrl ? (
+                    <Image source={{ uri: customer.avatarUrl }} style={styles.customerAvatar} />
+                  ) : (
+                    <View style={[styles.customerAvatarFallback, { backgroundColor: `${theme.colors.primary}18` }]}>
+                      <Ionicons name="person" size={18} color={theme.colors.primary} />
+                    </View>
+                  )}
+                  <View style={styles.customerInfo}>
+                    <View style={styles.customerNameRow}>
+                      <Text style={[styles.customerName, { color: theme.colors.text }]} numberOfLines={1}>{customer.fullName}</Text>
+                      <View style={styles.customerQuickActions}>
+                        <Pressable
+                          style={[styles.quickActionBtn, { backgroundColor: customer.contactNumber ? `${theme.colors.primary}15` : `${theme.colors.textMuted}15` }]}
+                          hitSlop={12}
+                          onPress={async () => {
+                            if (!customer.contactNumber) {
+                              Alert.alert('No Phone', 'This customer has no phone number on file.');
+                              return;
+                            }
+                            const num = customer.contactNumber.replace(/[^0-9]/g, '');
+                            const formatted = num.startsWith('63') ? `+${num}` : num.startsWith('0') ? `+63${num.slice(1)}` : `+63${num}`;
+                            if (Platform.OS === 'web') {
+                              await Clipboard.setStringAsync(formatted);
+                              showAlert({ title: 'Number copied', message: `${formatted} copied to clipboard.`, tone: 'success' });
+                            } else {
+                              try {
+                                await Linking.openURL(`tel:${formatted}`);
+                              } catch {
+                                Alert.alert('Call', `Dial: ${formatted}`);
+                              }
+                            }
+                          }}
+                        >
+                          <Ionicons name="call" size={14} color={customer.contactNumber ? theme.colors.primary : theme.colors.textMuted} />
+                        </Pressable>
+                        <Pressable
+                          style={[styles.quickActionBtn, { backgroundColor: `${theme.colors.primary}15` }]}
+                          hitSlop={12}
+                          onPress={() => {
+                            navigation.navigate('Inbox', { openCustomerId: customer.id });
+                          }}
+                        >
+                          <Ionicons name="chatbubble" size={14} color={theme.colors.primary} />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <Text style={[styles.customerEmail, { color: theme.colors.textMuted }]} numberOfLines={1}>
+                      {customer.email?.split('@')[0] ?? customer.id}
+                    </Text>
+                  </View>
                   {customer.activeRestriction ? (
+                    <View style={[styles.severityPill, { backgroundColor: theme.colors.warningBg }]}>
+                      <Text style={[styles.severityPillText, { color: theme.colors.warning }]}>
+                        {SEVERITY_LABEL[customer.activeRestriction.severity]}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={styles.customerStats}>
+                  <View style={[styles.statPill, { backgroundColor: theme.colors.surfaceAlt }]}>
+                    <Text style={[styles.statText, { color: theme.colors.textMuted }]}>Orders: {customer.totalOrders}</Text>
+                  </View>
+                  <View style={[styles.statPill, { backgroundColor: theme.colors.surfaceAlt }]}>
+                    <Text style={[styles.statText, { color: theme.colors.textMuted }]}>Ongoing: {customer.pendingOrders}</Text>
+                  </View>
+                </View>
+
+                {customer.activeRestriction ? (
+                  <Text style={[styles.restrictionNote, { color: theme.colors.warning }]}>
+                    Until {customer.activeRestriction.endsAt ? formatDateTime(customer.activeRestriction.endsAt) : 'Permanent'}
+                  </Text>
+                ) : null}
+
+                <View style={styles.actionsRow}>
+                  {!customer.activeRestriction ? (
+                    <>
+                      <Pressable
+                        style={[styles.actionBtn, { borderColor: theme.colors.border }]}
+                        onPress={() => applyRestriction(customer, 'warning')}
+                      >
+                        <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Warn</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[styles.actionBtn, { borderColor: theme.colors.border }]}
+                        onPress={() => applyRestriction(customer, 'restricted')}
+                      >
+                        <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Restrict</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[styles.actionBtn, { borderColor: theme.colors.border }]}
+                        onPress={() => applyRestriction(customer, 'banned')}
+                      >
+                        <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Ban</Text>
+                      </Pressable>
+                    </>
+                  ) : (
                     <Pressable
                       style={[styles.actionBtn, { borderColor: theme.colors.success }]}
                       onPress={() => liftRestriction(customer)}
                     >
                       <Text style={[styles.actionBtnText, { color: theme.colors.success }]}>Lift</Text>
                     </Pressable>
-                  ) : null}
+                  )}
                   <Pressable
-                    style={[styles.actionBtn, { borderColor: theme.colors.danger ?? '#EF4444' }]}
+                    style={[styles.actionBtn, { borderColor: theme.colors.danger }]}
                     onPress={() => removeAccount(customer)}
                   >
-                    <Text style={[styles.actionBtnText, { color: theme.colors.danger ?? '#EF4444' }]}>Delete</Text>
+                    <Text style={[styles.actionBtnText, { color: theme.colors.danger }]}>Delete</Text>
                   </Pressable>
                 </View>
               </View>
             ))}
           </View>
         )}
+
         {customerTotal > CUSTOMER_PAGE_SIZE || customerPage > 1 ? (
           <View style={styles.paginationRow}>
             <Pressable
-              style={[
-                styles.paginationBtn,
-                {
-                  borderColor: theme.colors.border,
-                  backgroundColor: customerPage <= 1 ? theme.colors.surfaceAlt : theme.colors.surface,
-                },
-              ]}
+              style={[styles.paginationBtn, { borderColor: theme.colors.border, backgroundColor: customerPage <= 1 ? theme.colors.surfaceAlt : theme.colors.surface }]}
               disabled={customerPage <= 1}
               onPress={() => setCustomerPage((prev) => Math.max(1, prev - 1))}
             >
-              <Text style={[styles.paginationBtnText, { color: customerPage <= 1 ? theme.colors.textMuted : theme.colors.text }]}>
-                Previous
-              </Text>
+              <Text style={[styles.paginationBtnText, { color: customerPage <= 1 ? theme.colors.textMuted : theme.colors.text }]}>Previous</Text>
             </Pressable>
-            <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
-              Page {customerPage} / {customerPageCount}
+            <Text style={[styles.paginationLabel, { color: theme.colors.textMuted }]}>
+              {customerPage}/{customerPageCount}
             </Text>
             <Pressable
-              style={[
-                styles.paginationBtn,
-                {
-                  borderColor: theme.colors.border,
-                  backgroundColor: customerPage >= customerPageCount ? theme.colors.surfaceAlt : theme.colors.surface,
-                },
-              ]}
+              style={[styles.paginationBtn, { borderColor: theme.colors.border, backgroundColor: customerPage >= customerPageCount ? theme.colors.surfaceAlt : theme.colors.surface }]}
               disabled={customerPage >= customerPageCount}
               onPress={() => setCustomerPage((prev) => Math.min(customerPageCount, prev + 1))}
             >
-              <Text
-                style={[
-                  styles.paginationBtnText,
-                  { color: customerPage >= customerPageCount ? theme.colors.textMuted : theme.colors.text },
-                ]}
-              >
-                Next
-              </Text>
+              <Text style={[styles.paginationBtnText, { color: customerPage >= customerPageCount ? theme.colors.textMuted : theme.colors.text }]}>Next</Text>
             </Pressable>
           </View>
         ) : null}
       </View>
 
-      <View style={[styles.card, styles.signOutCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <BrandLogoCard compact title="Secure Session" subtitle="Sign out to protect admin access." />
-        <Pressable style={[styles.signOutButton, { backgroundColor: theme.colors.danger }]} onPress={() => signOut()}>
-          <Text style={styles.signOutText}>Sign Out</Text>
-        </Pressable>
-      </View>
+      {/* ─── Sign Out ─── */}
+      <Pressable
+        style={[styles.signOutCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}
+        onPress={() => signOut()}
+      >
+        <Ionicons name="log-out-outline" size={18} color={theme.colors.danger} />
+        <Text style={[styles.signOutText, { color: theme.colors.danger }]}>Sign Out</Text>
+      </Pressable>
 
       <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
     </ScrollView>
@@ -292,107 +393,261 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
+    gap: 12,
     padding: 14,
-    paddingBottom: 10,
+    paddingBottom: 24,
   },
-  title: {
-    fontSize: 22,
-    fontWeight: '900',
+  profileCard: {
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 20,
   },
-  brandCard: {
+  avatarCircle: {
+    alignItems: 'center',
+    borderRadius: 999,
+    height: 52,
+    justifyContent: 'center',
+    width: 52,
+  },
+  profileName: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 10,
+  },
+  profileRole: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  profileDivider: {
+    height: 1,
     marginTop: 12,
+    width: '100%',
+  },
+  profileRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 10,
+    width: '100%',
+  },
+  profileMeta: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '500',
   },
   card: {
     borderRadius: 14,
     borderWidth: 1,
-    gap: 8,
-    marginTop: 12,
+    gap: 10,
     padding: 14,
   },
+  cardHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
   cardTitle: {
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  actionRow: {
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  actionRowLeft: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  actionLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  actionSub: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  searchWrap: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    paddingVertical: 4,
   },
   meta: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
   },
-  searchInput: {
-    borderRadius: 10,
-    borderWidth: 1,
-    fontSize: 13,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-  },
-  sectionList: {
+  customerList: {
     gap: 8,
-  },
-  paginationRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    marginTop: 10,
-  },
-  paginationBtn: {
-    borderRadius: 9,
-    borderWidth: 1,
-    minWidth: 92,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  paginationBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
   },
   customerCard: {
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    gap: 4,
-    padding: 10,
+    gap: 8,
+    padding: 12,
+  },
+  customerTop: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  customerAvatar: {
+    borderRadius: 20,
+    height: 40,
+    width: 40,
+  },
+  customerAvatarFallback: {
+    alignItems: 'center',
+    borderRadius: 20,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  customerInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  customerNameRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
   customerName: {
+    flex: 1,
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: '600',
+  },
+  customerQuickActions: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  quickActionBtn: {
+    alignItems: 'center',
+    borderRadius: 14,
+    height: 30,
+    justifyContent: 'center',
+    width: 30,
+  },
+  customerEmail: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  customerPhoneRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 1,
+  },
+  customerPhone: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  severityPill: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  severityPillText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  customerStats: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  statPill: {
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  statText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  restrictionNote: {
+    fontSize: 11,
+    fontWeight: '500',
   },
   actionsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
-    marginTop: 4,
   },
   actionBtn: {
     borderRadius: 8,
     borderWidth: 1,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingVertical: 6,
   },
   actionBtnText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '600',
   },
-  inboxButton: {
+  paginationRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  paginationBtn: {
     borderRadius: 999,
-    marginTop: 6,
-    paddingVertical: 11,
+    borderWidth: 1,
+    minWidth: 90,
+    paddingVertical: 8,
   },
-  inboxButtonText: {
-    fontSize: 13,
-    fontWeight: '800',
+  paginationBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
     textAlign: 'center',
   },
-  signOutButton: {
-    borderRadius: 999,
-    paddingVertical: 13,
+  paginationLabel: {
+    fontSize: 12,
+    fontWeight: '500',
   },
   signOutCard: {
-    marginTop: 16,
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    marginTop: 4,
+    paddingVertical: 14,
   },
   signOutText: {
-    color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '800',
-    textAlign: 'center',
+    fontWeight: '600',
+  },
+  sortToggle: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  sortToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

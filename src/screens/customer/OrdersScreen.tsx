@@ -10,13 +10,13 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TrackingMap } from '../../components/TrackingMap';
 
+import { AppTextInput } from '../../components/AppTextInput';
 import { EmptyState } from '../../components/EmptyState';
 import { BrandAlertModal } from '../../components/BrandAlertModal';
 import { ImagePreviewModal } from '../../components/ImagePreviewModal';
@@ -29,23 +29,23 @@ import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 import { buildAddressQuery, fetchDrivingRoute, geocodeAddress, getStoreCoordinates, haversineDistanceKm } from '../../services/geocodingService';
 import { pickAndUploadImages } from '../../services/mediaService';
+import { fetchProductById } from '../../services/productService';
 import {
   cancelCustomerOrder,
-  fetchCustomerAddresses,
   fetchCustomerOrders,
   fetchOrderTrackingEvents,
-  fetchProductById,
   fetchReviewedOrderItemIds,
   markOrderCompleted,
   requestOrderRefund,
-  submitProductReview,
-  submitRiderReview,
-} from '../../services/productService';
+} from '../../services/orderService';
+import { fetchCustomerAddresses } from '../../services/addressService';
+import { submitProductReview, submitRiderReview } from '../../services/reviewService';
 import { useCartStore } from '../../store/cartStore';
 import { CustomerAddress, Order, OrderItem, OrderTrackingEvent } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
 import { formatDateTime } from '../../utils/date';
 import { getProductBasePrice, getVariantUnitPrice } from '../../utils/pricing';
+import { runAfterWebBlur, runAsyncAfterWebBlur } from '../../utils/webAccessibility';
 
 const STATUS_LABEL: Record<Order['status'], string> = {
   pending: 'Order placed',
@@ -328,7 +328,7 @@ export function OrdersScreen() {
   const [trackingRouteDistanceKm, setTrackingRouteDistanceKm] = useState<number | null>(null);
   const [trackingSimulatedProgress, setTrackingSimulatedProgress] = useState<number | null>(null);
   const [trackingBusy, setTrackingBusy] = useState(false);
-  const [trackingMapVisible, setTrackingMapVisible] = useState(false);
+  const [trackingMapVisible, setTrackingMapVisible] = useState(true);
   const [refundOrder, setRefundOrder] = useState<Order | null>(null);
   const [refundReason, setRefundReason] = useState('');
   const [refundNote, setRefundNote] = useState('');
@@ -547,21 +547,25 @@ export function OrdersScreen() {
     : ['#FFFFFF'];
 
   const openReviewModal = (order: Order, item: OrderItem) => {
-    setReviewOrder(order);
-    setReviewItem(item);
-    setReviewRating(5);
-    setRiderRating(5);
-    setReviewComment('');
-    setReviewImageUrls([]);
+    runAfterWebBlur(() => {
+      setReviewOrder(order);
+      setReviewItem(item);
+      setReviewRating(5);
+      setRiderRating(5);
+      setReviewComment('');
+      setReviewImageUrls([]);
+    });
   };
 
   const openImagePreview = (imagesToPreview: string[], index = 0) => {
     if (!imagesToPreview.length) {
       return;
     }
-    setPreviewImages(imagesToPreview);
-    setPreviewIndex(index);
-    setPreviewVisible(true);
+    runAfterWebBlur(() => {
+      setPreviewImages(imagesToPreview);
+      setPreviewIndex(index);
+      setPreviewVisible(true);
+    });
   };
 
   const handleBuyAgain = async (orderItem: OrderItem) => {
@@ -615,14 +619,43 @@ export function OrdersScreen() {
     }
   };
 
+  const closeSelectedOrderModal = () => {
+    runAfterWebBlur(() => {
+      setSelectedOrder(null);
+    });
+  };
+
+  const closeRefundModal = () => {
+    runAfterWebBlur(() => {
+      setRefundOrder(null);
+      setRefundUploadProgress(null);
+    });
+  };
+
+  const closeReviewModal = () => {
+    runAfterWebBlur(() => {
+      setReviewOrder(null);
+      setReviewItem(null);
+      setReviewUploadProgress(null);
+    });
+  };
+
+  const closeImagePreview = () => {
+    runAfterWebBlur(() => {
+      setPreviewVisible(false);
+    });
+  };
+
   const closeTrackingModal = () => {
-    setTrackingOrder(null);
-    setTrackingDestination(null);
-    setTrackingRouteCoordinates([]);
-    setTrackingRouteDistanceKm(null);
-    setTrackingSimulatedProgress(null);
-    setTrackingMapVisible(false);
-    setTrackingBusy(false);
+    runAfterWebBlur(() => {
+      setTrackingOrder(null);
+      setTrackingDestination(null);
+      setTrackingRouteCoordinates([]);
+      setTrackingRouteDistanceKm(null);
+      setTrackingSimulatedProgress(null);
+      setTrackingMapVisible(false);
+      setTrackingBusy(false);
+    });
   };
 
   const openTrackingModal = async (order: Order) => {
@@ -635,14 +668,17 @@ export function OrdersScreen() {
       return;
     }
 
-    setTrackingOrder(order);
-    setTrackingEvents([]);
-    setTrackingDestination(null);
-    setTrackingRouteCoordinates([]);
-    setTrackingRouteDistanceKm(null);
-    setTrackingSimulatedProgress(null);
-    setTrackingMapVisible(false);
-    setTrackingBusy(true);
+    await runAsyncAfterWebBlur(async () => {
+      setSelectedOrder(null);
+      setTrackingOrder(order);
+      setTrackingEvents([]);
+      setTrackingDestination(null);
+      setTrackingRouteCoordinates([]);
+      setTrackingRouteDistanceKm(null);
+      setTrackingSimulatedProgress(null);
+      setTrackingMapVisible(true);
+      setTrackingBusy(true);
+    });
 
     try {
       const eventsPromise = fetchOrderTrackingEvents(order.id);
@@ -763,7 +799,6 @@ export function OrdersScreen() {
       contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 8), paddingTop: insets.top + 10 }]}
     >
       <LogoHeader />
-      <Text style={[styles.title, { color: theme.colors.text }]}>Order History</Text>
       {showLoader ? (
         <View style={styles.skeletonList}>
           {[0, 1, 2].map((item) => (
@@ -832,7 +867,11 @@ export function OrdersScreen() {
             <Pressable
               key={order.id}
               style={[styles.card, { backgroundColor: cardTone, borderColor: theme.colors.border }]}
-              onPress={() => setSelectedOrder(order)}
+              onPress={() => {
+                runAfterWebBlur(() => {
+                  setSelectedOrder(order);
+                });
+              }}
             >
               <View style={styles.cardHeader}>
                 <Text style={[styles.orderNo, { color: theme.colors.text }]}>{order.orderNo}</Text>
@@ -902,12 +941,12 @@ export function OrdersScreen() {
         </View>
       ) : null}
 
-      <Modal visible={Boolean(selectedOrder)} transparent animationType="slide" onRequestClose={() => setSelectedOrder(null)}>
+      <Modal visible={Boolean(selectedOrder)} transparent animationType="slide" onRequestClose={closeSelectedOrderModal}>
         <ModalBackdrop align="flex-end" overlayOpacity={0.42}>
           <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
             <View style={styles.modalTitleRow}>
               <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Order Details</Text>
-              <Pressable style={styles.modalIconCloseButton} onPress={() => setSelectedOrder(null)} hitSlop={8}>
+              <Pressable style={styles.modalIconCloseButton} onPress={closeSelectedOrderModal} hitSlop={8}>
                 <Ionicons name="close" size={15} color="#FFFFFF" />
               </Pressable>
             </View>
@@ -1007,7 +1046,6 @@ export function OrdersScreen() {
                                 <Pressable
                                   style={[styles.primaryButton, styles.itemActionButton, { backgroundColor: theme.colors.primary }]}
                                   onPress={() => {
-                                    setSelectedOrder(null);
                                     openReviewModal(selectedOrder, item);
                                   }}
                                 >
@@ -1031,7 +1069,6 @@ export function OrdersScreen() {
                           style={[styles.inlineTrackButton, { backgroundColor: `${theme.colors.primary}1A`, borderColor: `${theme.colors.primary}66` }]}
                           onPress={async () => {
                             const nextOrder = selectedOrder;
-                            setSelectedOrder(null);
                             await openTrackingModal(nextOrder);
                           }}
                         >
@@ -1051,7 +1088,7 @@ export function OrdersScreen() {
                         onPress={async () => {
                           try {
                             await cancelCustomerOrder(selectedOrder.id, 'Cancelled by customer');
-                            setSelectedOrder(null);
+                            closeSelectedOrderModal();
                             await loadOrders();
                           } catch (error) {
                             showAlert({
@@ -1072,7 +1109,7 @@ export function OrdersScreen() {
                         onPress={async () => {
                           try {
                             await markOrderCompleted(selectedOrder.id);
-                            setSelectedOrder(null);
+                            closeSelectedOrderModal();
                             await loadOrders();
                           } catch (error) {
                             showAlert({
@@ -1091,11 +1128,13 @@ export function OrdersScreen() {
                       <Pressable
                         style={[styles.secondaryButton, styles.actionButton, { borderColor: theme.colors.warning ?? '#F59E0B', backgroundColor: `${theme.colors.warning ?? '#F59E0B'}1A` }]}
                         onPress={() => {
-                          setRefundOrder(selectedOrder);
-                          setRefundReason('');
-                          setRefundNote('');
-                          setRefundEvidenceUrls([]);
-                          setSelectedOrder(null);
+                          runAfterWebBlur(() => {
+                            setRefundOrder(selectedOrder);
+                            setRefundReason('');
+                            setRefundNote('');
+                            setRefundEvidenceUrls([]);
+                            setSelectedOrder(null);
+                          });
                         }}
                       >
                         <Text style={[styles.secondaryButtonText, { color: theme.colors.warning ?? '#F59E0B' }]}>Refund</Text>
@@ -1145,7 +1184,11 @@ export function OrdersScreen() {
                   backgroundColor: trackingMapVisible ? theme.colors.primary : theme.colors.surfaceAlt,
                 },
               ]}
-              onPress={() => setTrackingMapVisible((prev) => !prev)}
+              onPress={() => {
+                runAfterWebBlur(() => {
+                  setTrackingMapVisible((prev) => !prev);
+                });
+              }}
             >
               <Text
                 style={[
@@ -1214,29 +1257,30 @@ export function OrdersScreen() {
         visible={Boolean(refundOrder)}
         transparent
         animationType="slide"
-        onRequestClose={() => {
-          setRefundOrder(null);
-          setRefundUploadProgress(null);
-        }}
+        onRequestClose={closeRefundModal}
       >
         <ModalBackdrop align="flex-end" overlayOpacity={0.42}>
           <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Request Refund</Text>
             <Text style={[styles.fieldLabel, { color: theme.colors.textMuted }]}>Reason *</Text>
-            <TextInput
+            <AppTextInput
+              webName="orders-refund-reason"
               value={refundReason}
               onChangeText={setRefundReason}
               placeholder="Reason (required)"
               placeholderTextColor={theme.colors.textMuted}
+              accessibilityLabel="Refund Reason"
               style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
             />
             <Text style={[styles.fieldLabel, { color: theme.colors.textMuted }]}>Details</Text>
-            <TextInput
+            <AppTextInput
+              webName="orders-refund-details"
               value={refundNote}
               onChangeText={setRefundNote}
               multiline
               placeholder="Tell us what happened. Attach clear photos and unboxing proof."
               placeholderTextColor={theme.colors.textMuted}
+              accessibilityLabel="Refund Details"
               style={[
                 styles.input,
                 styles.multiline,
@@ -1298,10 +1342,7 @@ export function OrdersScreen() {
             <View style={styles.actions}>
               <Pressable
                 style={[styles.secondaryButton, { borderColor: theme.colors.border }]}
-                onPress={() => {
-                  setRefundOrder(null);
-                  setRefundUploadProgress(null);
-                }}
+                onPress={closeRefundModal}
               >
                 <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Cancel</Text>
               </Pressable>
@@ -1318,8 +1359,7 @@ export function OrdersScreen() {
                       note: refundNote.trim(),
                       evidenceUrls: refundEvidenceUrls,
                     });
-                    setRefundOrder(null);
-                    setRefundUploadProgress(null);
+                    closeRefundModal();
                     await loadOrders();
                   } catch (error) {
                     showAlert({
@@ -1341,11 +1381,7 @@ export function OrdersScreen() {
         visible={Boolean(reviewOrder && reviewItem)}
         transparent
         animationType="slide"
-        onRequestClose={() => {
-          setReviewOrder(null);
-          setReviewItem(null);
-          setReviewUploadProgress(null);
-        }}
+        onRequestClose={closeReviewModal}
       >
         <ModalBackdrop align="flex-end" overlayOpacity={0.42}>
           <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
@@ -1368,12 +1404,14 @@ export function OrdersScreen() {
               ))}
             </View>
             <Text style={[styles.fieldLabel, { color: theme.colors.textMuted }]}>Comment</Text>
-            <TextInput
+            <AppTextInput
+              webName="orders-review-comment"
               value={reviewComment}
               onChangeText={setReviewComment}
               multiline
               placeholder="Share your experience"
               placeholderTextColor={theme.colors.textMuted}
+              accessibilityLabel="Review Comment"
               style={[
                 styles.input,
                 styles.multiline,
@@ -1435,11 +1473,7 @@ export function OrdersScreen() {
             <View style={styles.actions}>
               <Pressable
                 style={[styles.secondaryButton, { borderColor: theme.colors.border }]}
-                onPress={() => {
-                  setReviewOrder(null);
-                  setReviewItem(null);
-                  setReviewUploadProgress(null);
-                }}
+                onPress={closeReviewModal}
               >
                 <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Cancel</Text>
               </Pressable>
@@ -1465,10 +1499,12 @@ export function OrdersScreen() {
                       rating: riderRating,
                       comment: reviewComment.trim(),
                     });
-                    setReviewOrder(null);
-                    setReviewItem(null);
-                    setReviewImageUrls([]);
-                    setReviewUploadProgress(null);
+                    runAfterWebBlur(() => {
+                      setReviewOrder(null);
+                      setReviewItem(null);
+                      setReviewImageUrls([]);
+                      setReviewUploadProgress(null);
+                    });
                     await loadOrders();
                     showAlert({
                       title: 'Review submitted',
@@ -1495,7 +1531,7 @@ export function OrdersScreen() {
         visible={previewVisible}
         images={previewImages}
         initialIndex={previewIndex}
-        onClose={() => setPreviewVisible(false)}
+        onClose={closeImagePreview}
       />
 
       <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
@@ -1522,12 +1558,12 @@ const styles = StyleSheet.create({
   },
   loginButtonText: {
     fontSize: 15,
-    fontWeight: '800',
+    fontWeight: '600',
     textAlign: 'center',
   },
   title: {
     fontSize: 22,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   helper: {
     marginTop: 10,
@@ -1540,7 +1576,7 @@ const styles = StyleSheet.create({
   },
   pendingReviewTitle: {
     fontSize: 15,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   pendingReviewSub: {
     fontSize: 12,
@@ -1612,7 +1648,7 @@ const styles = StyleSheet.create({
   },
   orderNo: {
     fontSize: 15,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   orderStatus: {
     fontSize: 11,
@@ -1632,7 +1668,7 @@ const styles = StyleSheet.create({
   },
   orderStatusBadgeStrongText: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   meta: {
     fontSize: 11,
@@ -1756,6 +1792,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: -22,
     top: -19,
+    transform: [{ scaleX: -1 }],
     width: 44,
   },
   progressLabel: {
@@ -1781,7 +1818,7 @@ const styles = StyleSheet.create({
   },
   totalValue: {
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   actions: {
     flexDirection: 'row',
@@ -1807,7 +1844,7 @@ const styles = StyleSheet.create({
   },
   trackingSummaryTitle: {
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   trackingSummaryMeta: {
     fontSize: 12,
@@ -1878,7 +1915,7 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '600',
     textAlign: 'center',
   },
   secondaryButton: {
@@ -1910,7 +1947,7 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   modalIconCloseButton: {
     alignItems: 'center',
@@ -1943,7 +1980,7 @@ const styles = StyleSheet.create({
   },
   modalSectionTitle: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   inlineTrackButton: {
     borderRadius: 999,
@@ -1953,7 +1990,7 @@ const styles = StyleSheet.create({
   },
   inlineTrackButtonText: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   modalSectionList: {
     gap: 8,
@@ -1997,7 +2034,7 @@ const styles = StyleSheet.create({
   },
   supportTitle: {
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   supportNumber: {
     fontSize: 12,
@@ -2016,7 +2053,7 @@ const styles = StyleSheet.create({
   },
   timelineTitle: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   timelineMeta: {
     fontSize: 12,
@@ -2055,7 +2092,7 @@ const styles = StyleSheet.create({
   },
   star: {
     fontSize: 22,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 });
 

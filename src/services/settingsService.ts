@@ -1,68 +1,96 @@
 import { supabase } from '../lib/supabase';
-import { getDeliveryRatePerKm } from './geocodingService';
+import { getDeliveryRatePerKm, getStoreCoordinates } from './geocodingService';
 
 const DELIVERY_RATE_SETTING_KEY = 'delivery_rate_per_km';
-const DELIVERY_RATE_DESCRIPTION = 'Distance fee rate per kilometer for rider checkout.';
-
-function parseDeliveryRate(value: unknown) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return getDeliveryRatePerKm();
-  }
-  return parsed;
-}
+const STORE_LAT_KEY = 'store_latitude';
+const STORE_LNG_KEY = 'store_longitude';
+const DELIVERY_RADIUS_KEY = 'delivery_radius_meters';
+const FREE_SHIPPING_KEY = 'free_shipping_threshold';
 
 function isMissingSettingsTable(message?: string) {
   const text = (message ?? '').toLowerCase();
   return text.includes('app_settings') && (text.includes('relation') || text.includes('does not exist'));
 }
 
-export async function fetchDeliveryRatePerKmSetting(): Promise<number> {
-  if (!supabase) {
-    return getDeliveryRatePerKm();
-  }
-
+async function fetchSetting(key: string): Promise<string | null> {
+  if (!supabase) return null;
   const { data, error } = await supabase
     .from('app_settings')
     .select('setting_value')
-    .eq('setting_key', DELIVERY_RATE_SETTING_KEY)
+    .eq('setting_key', key)
     .maybeSingle();
+  if (error || !data) return null;
+  return data.setting_value;
+}
 
-  if (error) {
-    if (isMissingSettingsTable(error.message)) {
-      return getDeliveryRatePerKm();
-    }
-    throw new Error(error.message);
+async function upsertSetting(key: string, value: string) {
+  if (!supabase) return;
+  await supabase.from('app_settings').upsert({ setting_key: key, setting_value: value }, { onConflict: 'setting_key' });
+}
+
+export async function fetchDeliveryRatePerKmSetting(): Promise<number> {
+  const raw = await fetchSetting(DELIVERY_RATE_SETTING_KEY);
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return getDeliveryRatePerKm();
   }
+  return parsed;
+}
 
-  return parseDeliveryRate(data?.setting_value);
+export interface StoreLocation {
+  latitude: number;
+  longitude: number;
+}
+
+export async function fetchStoreLocation(): Promise<StoreLocation> {
+  const fallback = getStoreCoordinates();
+  const rawLat = await fetchSetting(STORE_LAT_KEY);
+  const rawLng = await fetchSetting(STORE_LNG_KEY);
+  const lat = Number(rawLat);
+  const lng = Number(rawLng);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { latitude: lat, longitude: lng };
+  }
+  return fallback;
+}
+
+export async function saveStoreLocation(lat: number, lng: number) {
+  await Promise.all([
+    upsertSetting(STORE_LAT_KEY, String(lat)),
+    upsertSetting(STORE_LNG_KEY, String(lng)),
+  ]);
+}
+
+export async function fetchDeliveryRadiusMeters(): Promise<number> {
+  const raw = await fetchSetting(DELIVERY_RADIUS_KEY);
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15000;
+}
+
+export async function saveDeliveryRadiusMeters(meters: number) {
+  await upsertSetting(DELIVERY_RADIUS_KEY, String(Math.max(1000, Math.round(meters))));
 }
 
 export async function saveDeliveryRatePerKmSetting(ratePerKm: number) {
-  if (!supabase) {
-    throw new Error('Supabase is required to save delivery settings.');
-  }
+  await upsertSetting(DELIVERY_RATE_SETTING_KEY, String(Math.max(0, Number(ratePerKm.toFixed(2)))));
+}
 
-  const normalized = Number(ratePerKm);
-  if (!Number.isFinite(normalized) || normalized <= 0) {
-    throw new Error('Delivery rate must be greater than zero.');
-  }
+export function haversineDistanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
-  const { error } = await supabase.from('app_settings').upsert(
-    {
-      setting_key: DELIVERY_RATE_SETTING_KEY,
-      setting_value: String(normalized),
-      description: DELIVERY_RATE_DESCRIPTION,
-    },
-    {
-      onConflict: 'setting_key',
-    },
-  );
+export async function fetchFreeShippingThreshold(): Promise<number> {
+  const raw = await fetchSetting(FREE_SHIPPING_KEY);
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
 
-  if (error) {
-    if (isMissingSettingsTable(error.message)) {
-      throw new Error('Missing app_settings table. Run the updated supabase/schema.sql in SQL editor first.');
-    }
-    throw new Error(error.message);
-  }
+export async function saveFreeShippingThreshold(threshold: number) {
+  await upsertSetting(FREE_SHIPPING_KEY, String(Math.max(0, Math.round(threshold))));
 }

@@ -153,7 +153,7 @@ const styles = StyleSheet.create({
     },
     title: {
         fontSize: 18,
-        fontWeight: '900',
+        fontWeight: '600',
     },
     closeButton: {
         padding: 4,
@@ -196,7 +196,7 @@ const styles = StyleSheet.create({
     },
     applyText: {
         fontSize: 15,
-        fontWeight: '800',
+        fontWeight: '600',
         textAlign: 'center',
     },
 });

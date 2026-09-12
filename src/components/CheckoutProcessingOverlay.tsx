@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Modal, Platform, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { Modal, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import { AppVideo } from './AppVideo';
 import { useTheme } from '../providers/ThemeProvider';
+import { blurActiveWebElement } from '../utils/webAccessibility';
 
 interface CheckoutProcessingOverlayProps {
   visible: boolean;
@@ -25,18 +26,23 @@ export function CheckoutProcessingOverlay({ visible }: CheckoutProcessingOverlay
       return;
     }
 
-    const timeout = setTimeout(() => setRenderVisible(false), 140);
+    const timeout = setTimeout(() => {
+      blurActiveWebElement();
+      setRenderVisible(false);
+    }, 140);
     return () => clearTimeout(timeout);
   }, [visible]);
 
-  useEffect(() => {
-    if (!visible || Platform.OS !== 'web' || typeof document === 'undefined') {
+  useLayoutEffect(() => {
+    if (!visible && !renderVisible) {
       return;
     }
 
-    const activeElement = document.activeElement as { blur?: () => void } | null;
-    activeElement?.blur?.();
-  }, [visible]);
+    blurActiveWebElement();
+    return () => {
+      blurActiveWebElement();
+    };
+  }, [renderVisible, visible]);
 
   if (!renderVisible) {
     return null;
@@ -103,7 +109,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 17,
-    fontWeight: '900',
+    fontWeight: '600',
     textAlign: 'center',
   },
   sub: {

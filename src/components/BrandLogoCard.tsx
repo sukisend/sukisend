@@ -10,8 +10,8 @@ interface BrandLogoCardProps {
 }
 
 export function BrandLogoCard({
-  title = 'SUKI SEND',
-  subtitle = 'From Store to Door, Ka Suki',
+  title,
+  subtitle,
   compact = false,
   style,
 }: BrandLogoCardProps) {
@@ -47,24 +47,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
     borderWidth: 1,
-    height: 108,
+    height: 130,
     justifyContent: 'center',
     width: '100%',
   },
   logoFrameCompact: {
-    height: 80,
+    height: 95,
   },
   logo: {
-    height: 70,
-    width: 182,
+    height: 90,
+    width: 230,
   },
   logoCompact: {
-    height: 54,
-    width: 150,
+    height: 65,
+    width: 180,
   },
   title: {
     fontSize: 16,
-    fontWeight: '900',
+    fontWeight: '600',
     marginTop: 10,
     textAlign: 'center',
   },

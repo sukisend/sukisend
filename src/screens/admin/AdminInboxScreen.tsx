@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useRoute, RouteProp } from '@react-navigation/native';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { AppVideo } from '../../components/AppVideo';
 import { BrandAlertModal } from '../../components/BrandAlertModal';
@@ -8,10 +9,14 @@ import { EmptyState } from '../../components/EmptyState';
 import { ModalBackdrop } from '../../components/ModalBackdrop';
 import { SectionHeader } from '../../components/SectionHeader';
 import { useBrandAlert } from '../../hooks/useBrandAlert';
+import * as Clipboard from 'expo-clipboard';
 import { useTheme } from '../../providers/ThemeProvider';
+import { AdminTabsParamList } from '../../navigation/types';
 import {
+  deleteSellerChatThread,
   fetchAdminSellerThreadsPage,
   fetchSellerChatMessagesPage,
+  getOrCreateSellerThread,
   markSellerChatThreadRead,
   sendSellerChatAttachmentMessage,
   sendSellerChatMessage,
@@ -33,6 +38,8 @@ function getLatestMessageKey(messages: SellerChatMessage[]) {
 
 export function AdminInboxScreen() {
   const { theme } = useTheme();
+  const route = useRoute<RouteProp<AdminTabsParamList, 'Inbox'>>();
+  const openCustomerId = route.params && 'openCustomerId' in route.params ? route.params.openCustomerId : undefined;
   const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const [loading, setLoading] = useState(false);
   const [threads, setThreads] = useState<SellerChatThread[]>([]);
@@ -50,6 +57,7 @@ export function AdminInboxScreen() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [messagesPage, setMessagesPage] = useState(1);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const modalMessagesRef = useRef<ScrollView | null>(null);
   const threadMessagesRef = useRef<SellerChatMessage[]>([]);
 
@@ -67,8 +75,9 @@ export function AdminInboxScreen() {
         pageSize: THREAD_PAGE_SIZE,
         search,
       });
-      setThreads(result.rows);
-      setThreadTotal(result.total);
+      const rowsWithMessages = result.rows.filter((row) => row.lastMessage);
+      setThreads(rowsWithMessages);
+      setThreadTotal(rowsWithMessages.length > 0 ? rowsWithMessages.length : result.rows.length);
     } catch (error) {
       setThreads([]);
       setThreadTotal(0);
@@ -149,7 +158,7 @@ export function AdminInboxScreen() {
   useEffect(() => {
     const timer = setInterval(() => {
       loadThreads(threadPage, searchQuery, true);
-    }, 5000);
+    }, 30000);
     return () => clearInterval(timer);
   }, [threadPage, searchQuery]);
 
@@ -160,10 +169,37 @@ export function AdminInboxScreen() {
 
     const timer = setInterval(async () => {
       await loadThreadMessages(activeThread.id, 1, 'replace', true);
-    }, 4000);
+    }, 8000);
 
     return () => clearInterval(timer);
   }, [activeThread, chatModalVisible]);
+
+  useEffect(() => {
+    if (!openCustomerId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const threadId = await getOrCreateSellerThread(openCustomerId);
+        await loadThreads(1, '');
+        const result = await fetchAdminSellerThreadsPage({ page: 1, pageSize: THREAD_PAGE_SIZE, search: '' });
+        const thread = result.rows.find((t) => t.id === threadId);
+        if (thread && !cancelled) {
+          await openThread(thread);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          showAlert({
+            title: 'Unable to open chat',
+            message: error instanceof Error ? error.message : 'Please try again.',
+            tone: 'error',
+          });
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [openCustomerId]);
 
   const openThread = async (thread: SellerChatThread) => {
     try {
@@ -190,6 +226,27 @@ export function AdminInboxScreen() {
     setHasMoreMessages(false);
     setMessagesPage(1);
     setChatDraft('');
+  };
+
+  const deleteThread = (thread: SellerChatThread) => {
+    showAlert({
+      title: 'Delete conversation',
+      message: `Delete all messages with ${thread.customerName}? This cannot be undone.`,
+      tone: 'error',
+      actionLabel: 'Delete',
+      onAction: async () => {
+        try {
+          await deleteSellerChatThread(thread.id);
+          await loadThreads(threadPage, searchQuery);
+        } catch (error) {
+          showAlert({
+            title: 'Unable to delete',
+            message: error instanceof Error ? error.message : 'Please try again.',
+            tone: 'error',
+          });
+        }
+      },
+    });
   };
 
   const loadOlderMessages = async () => {
@@ -280,7 +337,7 @@ export function AdminInboxScreen() {
           <View style={[styles.summaryDivider, { backgroundColor: theme.colors.border }]} />
           <View style={styles.summaryCol}>
             <Text style={[styles.summaryLabel, { color: theme.colors.textMuted }]}>Threads</Text>
-            <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{threadTotal}</Text>
+            <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{threads.length}</Text>
           </View>
           <View style={[styles.summaryDivider, { backgroundColor: theme.colors.border }]} />
           <View style={styles.summaryCol}>
@@ -298,7 +355,7 @@ export function AdminInboxScreen() {
             onChangeText={setSearchDraft}
             placeholder="Search by customer name or email..."
             placeholderTextColor={theme.colors.textMuted}
-            style={[styles.searchInput, { color: theme.colors.text }]}
+            style={[styles.searchInput, { color: theme.colors.text, outlineWidth: 0 }]}
           />
         </View>
 
@@ -308,13 +365,20 @@ export function AdminInboxScreen() {
           <EmptyState title="No messages yet" subtitle="Customer inquiries will appear here once they start chatting." />
         ) : (
           <View style={styles.threadList}>
-            {threads.map((thread) => (
+            {threads.filter((t) => t.lastMessage || t.unreadCount > 0).map((thread) => (
               <Pressable
                 key={thread.id}
                 style={[styles.threadCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}
                 onPress={() => openThread(thread)}
               >
                 <View style={styles.threadTop}>
+                  {thread.customerAvatarUrl ? (
+                    <Image source={{ uri: thread.customerAvatarUrl }} style={styles.threadAvatar} />
+                  ) : (
+                    <View style={[styles.threadAvatar, styles.threadAvatarFallback, { backgroundColor: theme.colors.primary + '22' }]}>
+                      <Ionicons name="person-outline" size={18} color={theme.colors.primary} />
+                    </View>
+                  )}
                   <Text style={[styles.threadName, { color: theme.colors.text }]} numberOfLines={1}>
                     {thread.customerName}
                   </Text>
@@ -324,11 +388,38 @@ export function AdminInboxScreen() {
                         {thread.unreadCount}
                       </Text>
                     </View>
-                  ) : (
-                    <View style={[styles.unreadBadge, { backgroundColor: theme.colors.surfaceAlt }]}>
-                      <Text style={[styles.unreadText, { color: theme.colors.textMuted }]}>0</Text>
-                    </View>
-                  )}
+                  ) : null}
+                  <Pressable
+                    style={[styles.threadCallBtn]}
+                    hitSlop={8}
+                    onPress={async () => {
+                      if (!thread.contactNumber) {
+                        Alert.alert('No Phone', 'This customer has no phone number on file.');
+                        return;
+                      }
+                      const num = thread.contactNumber.replace(/[^0-9]/g, '');
+                      const formatted = num.startsWith('63') ? `+${num}` : num.startsWith('0') ? `+63${num.slice(1)}` : `+63${num}`;
+                      if (Platform.OS === 'web') {
+                        await Clipboard.setStringAsync(formatted);
+                        showAlert({ title: 'Number copied', message: `${formatted} copied to clipboard.`, tone: 'success' });
+                      } else {
+                        try {
+                          await Linking.openURL(`tel:${formatted}`);
+                        } catch {
+                          Alert.alert('Call', `Dial: ${formatted}`);
+                        }
+                      }
+                    }}
+                  >
+                    <Ionicons name="call-outline" size={13} color={theme.colors.primary} />
+                  </Pressable>
+                  <Pressable
+                    style={[styles.threadDeleteBtn]}
+                    onPress={() => deleteThread(thread)}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="trash-outline" size={15} color="#EF4444" />
+                  </Pressable>
                 </View>
 
                 <Text style={[styles.threadPreview, { color: theme.colors.textMuted }]} numberOfLines={1}>
@@ -386,12 +477,48 @@ export function AdminInboxScreen() {
         <ModalBackdrop overlayOpacity={0.45}>
           <View style={[styles.modalCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: theme.colors.text }]}>
-                {activeThread ? activeThread.customerName : 'Conversation'}
-              </Text>
-              <Pressable style={styles.modalClose} onPress={closeThread} hitSlop={8}>
-                <Ionicons name="close" size={16} color="#FFFFFF" />
-              </Pressable>
+              <View style={styles.modalHeaderLeft}>
+                <Text style={[styles.modalTitle, { color: theme.colors.text }]}>
+                  {activeThread ? activeThread.customerName : 'Conversation'}
+                </Text>
+                {activeThread?.contactNumber ? (
+                  <View style={styles.modalPhoneRow}>
+                    <Ionicons name="call-outline" size={12} color={theme.colors.textMuted} />
+                    <Text style={[styles.modalSubtitle, { color: theme.colors.textMuted }]}>
+                      {activeThread.contactNumber}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <View style={styles.modalHeaderRight}>
+                <Pressable
+                  style={[styles.modalCall, { backgroundColor: activeThread?.contactNumber ? '#E8F5E9' : theme.colors.surfaceAlt }]}
+                  onPress={async () => {
+                    if (!activeThread?.contactNumber) {
+                      Alert.alert('No Phone', 'No phone number on file for this customer.');
+                      return;
+                    }
+                    const num = activeThread.contactNumber.replace(/[^0-9]/g, '');
+                    const formatted = num.startsWith('63') ? `+${num}` : num.startsWith('0') ? `+63${num.slice(1)}` : `+63${num}`;
+                    if (Platform.OS === 'web') {
+                      await Clipboard.setStringAsync(formatted);
+                      showAlert({ title: 'Number copied', message: `${formatted} copied to clipboard.`, tone: 'success' });
+                    } else {
+                      try {
+                        await Linking.openURL(`tel:${formatted}`);
+                      } catch {
+                        Alert.alert('Call', `Dial: ${formatted}`);
+                      }
+                    }
+                  }}
+                  hitSlop={8}
+                >
+                  <Ionicons name="call" size={16} color={activeThread?.contactNumber ? '#2E7D32' : theme.colors.textMuted} />
+                </Pressable>
+                <Pressable style={styles.modalClose} onPress={closeThread} hitSlop={8}>
+                  <Ionicons name="close" size={16} color="#71717A" />
+                </Pressable>
+              </View>
             </View>
 
             {hasMoreMessages ? (
@@ -427,14 +554,16 @@ export function AdminInboxScreen() {
                       style={[
                         styles.chatBubble,
                         {
-                          backgroundColor: own ? theme.colors.primary : theme.colors.surface,
-                          borderColor: own ? theme.colors.primary : theme.colors.border,
+                          backgroundColor: own ? '#E06D3B' : theme.colors.surface,
+                          borderColor: own ? '#E06D3B' : theme.colors.border,
                         },
                       ]}
                     >
                       {message.attachment ? (
                         message.attachment.type === 'image' ? (
-                          <Image source={{ uri: message.attachment.url }} style={styles.chatImage} resizeMode="cover" />
+                          <Pressable onPress={() => setPreviewImageUrl(message.attachment!.url)}>
+                            <Image source={{ uri: message.attachment.url }} style={styles.chatImage} resizeMode="cover" />
+                          </Pressable>
                         ) : (
                           <AppVideo
                             source={{ uri: message.attachment.url }}
@@ -449,14 +578,14 @@ export function AdminInboxScreen() {
                         )
                       ) : null}
                       {message.message.trim().length > 0 ? (
-                        <Text style={[styles.chatText, { color: own ? theme.colors.primaryContrast : theme.colors.text }]}>
+                        <Text style={[styles.chatText, { color: own ? '#FFFFFF' : theme.colors.text }]}>
                           {message.message}
                         </Text>
                       ) : null}
                       <Text
                         style={[
                           styles.chatMeta,
-                          { color: own ? `${theme.colors.primaryContrast}CC` : theme.colors.textMuted },
+                          { color: own ? 'rgba(255,255,255,0.7)' : theme.colors.textMuted },
                         ]}
                       >
                         {formatDateTime(message.createdAt)}
@@ -492,14 +621,15 @@ export function AdminInboxScreen() {
             {uploadError ? <Text style={[styles.helper, { color: theme.colors.warning }]}>{uploadError}</Text> : null}
 
             <Pressable
-              style={[styles.sendBtn, { backgroundColor: sendingChat ? theme.colors.surfaceAlt : theme.colors.primary }]}
+              style={[styles.sendBtn, { backgroundColor: sendingChat || !chatDraft.trim() ? theme.colors.surfaceAlt : theme.colors.primary }]}
               onPress={sendChat}
               disabled={sendingChat || uploadingMedia || !chatDraft.trim()}
             >
+              <Ionicons name="send-outline" size={14} color={sendingChat || !chatDraft.trim() ? theme.colors.textMuted : '#FFFFFF'} />
               <Text
                 style={[
                   styles.sendBtnText,
-                  { color: sendingChat || !chatDraft.trim() ? theme.colors.textMuted : theme.colors.primaryContrast },
+                  { color: sendingChat || !chatDraft.trim() ? theme.colors.textMuted : '#FFFFFF' },
                 ]}
               >
                 {sendingChat ? 'Sending...' : 'Send Reply'}
@@ -510,6 +640,20 @@ export function AdminInboxScreen() {
       </Modal>
 
       <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
+
+      {/* ─── IMAGE PREVIEW MODAL ─── */}
+      <Modal visible={!!previewImageUrl} transparent animationType="fade" onRequestClose={() => setPreviewImageUrl(null)}>
+        <Pressable style={styles.previewOverlay} onPress={() => setPreviewImageUrl(null)}>
+          <Pressable style={styles.previewClose} onPress={() => setPreviewImageUrl(null)} hitSlop={12}>
+            <Ionicons name="close" size={20} color="#FFFFFF" />
+          </Pressable>
+          <Pressable style={styles.previewImageWrap} onPress={() => {}}>
+            {previewImageUrl ? (
+              <Image source={{ uri: previewImageUrl }} style={styles.previewImage} resizeMode="contain" />
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -546,7 +690,7 @@ const styles = StyleSheet.create({
   },
   summaryValue: {
     fontSize: 16,
-    fontWeight: '900',
+    fontWeight: '600',
     marginTop: 3,
   },
   searchRow: {
@@ -582,10 +726,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  threadAvatar: {
+    borderRadius: 18,
+    height: 36,
+    width: 36,
+  },
+  threadAvatarFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   threadName: {
     flex: 1,
     fontSize: 14,
-    fontWeight: '900',
+    fontWeight: '600',
+  },
+  threadCallBtn: {
+    alignItems: 'center',
+    borderRadius: 6,
+    height: 24,
+    justifyContent: 'center',
+    width: 24,
+  },
+  threadDeleteBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 4,
   },
   threadPreview: {
     fontSize: 12,
@@ -604,7 +769,7 @@ const styles = StyleSheet.create({
   },
   unreadText: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   paginationRow: {
     flexDirection: 'row',
@@ -634,23 +799,43 @@ const styles = StyleSheet.create({
   modalHeader: {
     alignItems: 'center',
     flexDirection: 'row',
-    paddingRight: 30,
+    justifyContent: 'space-between',
+  },
+  modalHeaderLeft: {
+    flex: 1,
+  },
+  modalHeaderRight: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
   modalTitle: {
-    flex: 1,
     fontSize: 16,
-    fontWeight: '900',
+    fontWeight: '600',
+  },
+  modalSubtitle: {
+    fontSize: 12,
+  },
+  modalPhoneRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 2,
+  },
+  modalCall: {
+    alignItems: 'center',
+    borderRadius: 999,
+    height: 28,
+    justifyContent: 'center',
+    width: 28,
   },
   modalClose: {
     alignItems: 'center',
-    backgroundColor: '#DC2626',
+    backgroundColor: '#F5F0EB',
     borderRadius: 999,
-    height: 26,
+    height: 28,
     justifyContent: 'center',
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    width: 26,
+    width: 28,
   },
   loadOlderBtn: {
     alignItems: 'center',
@@ -681,12 +866,12 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   chatBubble: {
-    borderRadius: 10,
+    borderRadius: 18,
     borderWidth: 1,
-    maxWidth: '90%',
-    paddingHorizontal: 9,
-    paddingTop: 7,
-    paddingBottom: 6,
+    maxWidth: '85%',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 7,
   },
   chatText: {
     fontSize: 13,
@@ -744,14 +929,45 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  sendBtn: {
+  previewOverlay: {
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    flex: 1,
+    justifyContent: 'center',
+    padding: 20,
+  },
+  previewClose: {
+    alignItems: 'center',
+    alignSelf: 'flex-end',
+    backgroundColor: 'rgba(255,255,255,0.2)',
     borderRadius: 999,
+    height: 32,
+    justifyContent: 'center',
+    marginBottom: 16,
+    width: 32,
+  },
+  previewImageWrap: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+  },
+  previewImage: {
+    borderRadius: 8,
+    height: '80%',
+    maxHeight: 600,
+    width: '90%',
+  },
+  sendBtn: {
+    alignItems: 'center',
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
     marginTop: 8,
     paddingVertical: 12,
   },
   sendBtnText: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '700',
     textAlign: 'center',
   },
 });

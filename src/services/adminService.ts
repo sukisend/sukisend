@@ -15,113 +15,11 @@ import {
   ShippingMethod,
 } from '../types/models';
 import { buildDateRange } from '../utils/date';
+import { getCategoryIconColumnSupported, isMissingCategoryIconColumn, setCategoryIconColumnSupported } from './columnDetection';
+import { mapRowToOrder, mapRowToProduct, mapRowToShippingMethod } from './mappers';
 
 const localProducts = [...mockProducts];
 const localOrders = [...mockTransactions];
-let categoryIconColumnSupported: boolean | null = null;
-
-function isMissingColumnError(message?: string) {
-  return (message ?? '').toLowerCase().includes('column') && (message ?? '').toLowerCase().includes('icon');
-}
-
-function mapRowToProduct(row: any): Product {
-  const category = Array.isArray(row.categories) ? row.categories[0] : row.categories;
-  const images = (row.product_images ?? [])
-    .map((image: any) => ({
-      id: image.id,
-      productId: image.product_id,
-      imageUrl: image.image_url,
-      sortOrder: Number(image.sort_order ?? 0),
-    }))
-    .sort((a: any, b: any) => a.sortOrder - b.sortOrder);
-  const variants = (row.product_variants ?? []).map((variant: any) => ({
-    id: variant.id,
-    productId: variant.product_id,
-    name: variant.name,
-    value: variant.value,
-    priceDelta: Number(variant.price_delta ?? 0),
-    stockOverride: variant.stock_override === null ? undefined : Number(variant.stock_override),
-    isActive: Boolean(variant.is_active ?? true),
-  }));
-
-  return {
-    id: row.id,
-    name: row.name,
-    description: row.description ?? '',
-    sku: row.sku ?? '',
-    categoryId: row.category_id ?? category?.id ?? 'uncategorized',
-    categoryName: category?.name ?? row.category_name ?? 'General',
-    unit: row.unit ?? 'pcs',
-    cost: Number(row.cost ?? 0),
-    price: Number(row.price ?? 0),
-    stock: Number(row.stock ?? 0),
-    minStock: Number(row.min_stock ?? 0),
-    imageUrl: images[0]?.imageUrl ?? row.image_url ?? undefined,
-    images,
-    variants,
-    onSale: Boolean(row.on_sale ?? false),
-    salePrice: row.sale_price === null ? undefined : Number(row.sale_price),
-    sortPriority: Number(row.sort_priority ?? 0),
-    isActive: Boolean(row.is_active ?? true),
-  };
-}
-
-function mapRowToOrder(row: any): Order {
-  return {
-    id: row.id,
-    orderNo: row.order_no,
-    customerId: row.customer_id,
-    status: row.status,
-    paymentMethod: 'COD',
-    paymentStatus: row.payment_status ?? 'unpaid',
-    shippingMethodId: row.shipping_method_id ?? undefined,
-    shippingMethodName: row.shipping_method_name ?? undefined,
-    trackingNumber: row.tracking_number ?? undefined,
-    deliveryArea: row.delivery_area ?? '',
-    deliveryAddress: row.delivery_address ?? '',
-    customerNote: row.customer_note ?? undefined,
-    expectedDeliveryStart: row.expected_delivery_start ?? undefined,
-    expectedDeliveryEnd: row.expected_delivery_end ?? undefined,
-    latestLat: row.latest_lat === null ? undefined : Number(row.latest_lat),
-    latestLng: row.latest_lng === null ? undefined : Number(row.latest_lng),
-    approvedAt: row.approved_at ?? undefined,
-    shippedAt: row.shipped_at ?? undefined,
-    deliveredAt: row.delivered_at ?? undefined,
-    completedAt: row.completed_at ?? undefined,
-    cancelledAt: row.cancelled_at ?? undefined,
-    cancelReason: row.cancel_reason ?? undefined,
-    refundedAt: row.refunded_at ?? undefined,
-    refundDeadlineAt: row.refund_deadline_at ?? undefined,
-    subtotal: Number(row.subtotal ?? 0),
-    deliveryFee: Number(row.delivery_fee ?? 0),
-    total: Number(row.total ?? 0),
-    createdAt: row.created_at,
-    items: (row.order_items ?? []).map((item: any) => ({
-      id: item.id,
-      productId: item.product_id,
-      variantId: item.variant_id ?? undefined,
-      variantName: item.variant_name ?? undefined,
-      variantValue: item.variant_value ?? undefined,
-      productName: item.product_name,
-      sku: item.sku ?? '',
-      unitPrice: Number(item.unit_price ?? 0),
-      quantity: Number(item.quantity ?? 0),
-      lineTotal: Number(item.line_total ?? 0),
-    })),
-  };
-}
-
-function mapRowToShippingMethod(row: any): ShippingMethod {
-  return {
-    id: row.id,
-    name: row.name,
-    description: row.description ?? undefined,
-    baseFee: Number(row.base_fee ?? 0),
-    etaMinDays: row.eta_min_days ?? undefined,
-    etaMaxDays: row.eta_max_days ?? undefined,
-    isActive: Boolean(row.is_active ?? true),
-  };
-}
 
 function isInsideRange(dateValue: string, range: DateRange) {
   const date = dayjs(dateValue).valueOf();
@@ -235,18 +133,18 @@ export async function fetchAdminCategories(): Promise<Category[]> {
     return [];
   }
 
-  if (categoryIconColumnSupported !== false) {
-    const { data, error } = await supabase.from('categories').select('id, name, icon').order('name', { ascending: true });
+  if (getCategoryIconColumnSupported() !== false) {
+    const { data, error } = await supabase.from('categories').select('id, name, icon, image_url').order('name', { ascending: true });
     if (!error) {
-      categoryIconColumnSupported = true;
-      return data ?? [];
+      setCategoryIconColumnSupported(true);
+      return (data ?? []).map((row: any) => ({ ...row, imageUrl: row.image_url }));
     }
 
-    if (!isMissingColumnError(error.message)) {
+    if (!isMissingCategoryIconColumn(error.message)) {
       throw new Error(error.message);
     }
 
-    categoryIconColumnSupported = false;
+    setCategoryIconColumnSupported(false);
   }
 
   const { data, error } = await supabase.from('categories').select('id, name').order('name', { ascending: true });
@@ -278,6 +176,7 @@ export async function saveShippingMethod(input: {
   name: string;
   description?: string;
   baseFee: number;
+  ratePerKm?: number;
   etaMinDays?: number;
   etaMaxDays?: number;
   isActive?: boolean;
@@ -290,6 +189,7 @@ export async function saveShippingMethod(input: {
     name: input.name.trim(),
     description: input.description?.trim() || null,
     base_fee: input.baseFee,
+    rate_per_km: input.ratePerKm ?? 15,
     eta_min_days: input.etaMinDays ?? null,
     eta_max_days: input.etaMaxDays ?? null,
     is_active: input.isActive ?? true,
@@ -320,25 +220,25 @@ export async function deleteShippingMethod(id: string) {
   }
 }
 
-export async function saveCategory(input: { name: string; icon?: string }): Promise<string> {
+export async function saveCategory(input: { name: string; icon?: string; imageUrl?: string }): Promise<string> {
   if (!supabase) {
     throw new Error('Categories require Supabase.');
   }
 
-  const payload = { name: input.name.trim(), icon: input.icon?.trim() || null };
+  const payload = { name: input.name.trim(), icon: input.icon?.trim() || null, image_url: input.imageUrl || null };
 
-  if (categoryIconColumnSupported !== false) {
+  if (getCategoryIconColumnSupported() !== false) {
     const { data, error } = await supabase.from('categories').insert(payload).select('id').single();
     if (!error) {
-      categoryIconColumnSupported = true;
+      setCategoryIconColumnSupported(true);
       return data.id;
     }
 
-    if (!isMissingColumnError(error.message)) {
+    if (!isMissingCategoryIconColumn(error.message)) {
       throw new Error(error.message);
     }
 
-    categoryIconColumnSupported = false;
+    setCategoryIconColumnSupported(false);
   }
 
   const { data, error } = await supabase
@@ -352,25 +252,25 @@ export async function saveCategory(input: { name: string; icon?: string }): Prom
   return data.id;
 }
 
-export async function updateCategory(input: { id: string; name: string; icon?: string }) {
+export async function updateCategory(input: { id: string; name: string; icon?: string; imageUrl?: string }) {
   if (!supabase) {
     throw new Error('Categories require Supabase.');
   }
 
-  const payload = { name: input.name.trim(), icon: input.icon?.trim() || null };
+  const payload = { name: input.name.trim(), icon: input.icon?.trim() || null, image_url: input.imageUrl || null };
 
-  if (categoryIconColumnSupported !== false) {
+  if (getCategoryIconColumnSupported() !== false) {
     const { error } = await supabase.from('categories').update(payload).eq('id', input.id);
     if (!error) {
-      categoryIconColumnSupported = true;
+      setCategoryIconColumnSupported(true);
       return;
     }
 
-    if (!isMissingColumnError(error.message)) {
+    if (!isMissingCategoryIconColumn(error.message)) {
       throw new Error(error.message);
     }
 
-    categoryIconColumnSupported = false;
+    setCategoryIconColumnSupported(false);
   }
 
   const { error } = await supabase.from('categories').update({ name: input.name.trim() }).eq('id', input.id);
@@ -437,7 +337,7 @@ export async function fetchInventoryProducts(input?: { page?: number; pageSize?:
       is_active,
       categories ( id, name ),
       product_images ( id, product_id, image_url, sort_order ),
-      product_variants ( id, product_id, name, value, price_delta, stock_override, is_active )
+      product_variants ( id, product_id, name, value, price_delta, stock_override, image_url, is_active )
     `,
     );
 
@@ -464,6 +364,7 @@ interface SaveProductVariantInput {
   value: string;
   priceDelta?: number;
   stockOverride?: number;
+  imageUrl?: string;
   isActive?: boolean;
 }
 
@@ -486,6 +387,7 @@ async function syncProductVariants(productId: string, variants: SaveProductVaria
         variant.stockOverride === undefined || variant.stockOverride === null || Number.isNaN(Number(variant.stockOverride))
           ? null
           : Math.max(0, Math.round(Number(variant.stockOverride))),
+      imageUrl: variant.imageUrl?.trim() || null,
       isActive: variant.isActive ?? true,
     }))
     .filter((variant) => variant.name && variant.value);
@@ -516,6 +418,7 @@ async function syncProductVariants(productId: string, variants: SaveProductVaria
       value: variant.value,
       price_delta: variant.priceDelta,
       stock_override: variant.stockOverride,
+      image_url: variant.imageUrl,
       is_active: variant.isActive,
     };
 
@@ -615,6 +518,11 @@ export async function saveProduct(input: {
   sortPriority?: number;
   variants?: SaveProductVariantInput[];
 }) {
+  const activeVariants = (input.variants ?? []).filter((variant) => variant.isActive !== false);
+  const hasVariantInventory = activeVariants.some((variant) => Number.isFinite(Number(variant.stockOverride)));
+  const resolvedStock = hasVariantInventory
+    ? activeVariants.reduce((total, variant) => total + Math.max(0, Math.round(Number(variant.stockOverride ?? 0))), 0)
+    : input.stock;
   if (!supabase) {
     const existingIndex = localProducts.findIndex((item) => item.id === input.id);
 
@@ -629,7 +537,7 @@ export async function saveProduct(input: {
       unit: input.unit,
       cost: input.cost,
       price: input.price,
-      stock: input.stock,
+      stock: resolvedStock,
       minStock: input.minStock,
       imageUrl: input.imageUrls?.[0],
       images: (input.imageUrls ?? []).map((imageUrl, index) => ({
@@ -671,7 +579,7 @@ export async function saveProduct(input: {
     unit: input.unit,
     cost: input.cost,
     price: input.price,
-    stock: input.stock,
+    stock: resolvedStock,
     min_stock: input.minStock,
     sku: input.sku || `${input.categoryName.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-6)}`,
     image_url: input.imageUrls?.[0] ?? null,
@@ -701,7 +609,7 @@ export async function saveProduct(input: {
       is_active,
       categories ( id, name ),
       product_images ( id, product_id, image_url, sort_order ),
-      product_variants ( id, product_id, name, value, price_delta, stock_override, is_active )
+      product_variants ( id, product_id, name, value, price_delta, stock_override, image_url, is_active )
     `,
   ).single();
 
@@ -755,7 +663,7 @@ export async function saveProduct(input: {
       is_active,
       categories ( id, name ),
       product_images ( id, product_id, image_url, sort_order ),
-      product_variants ( id, product_id, name, value, price_delta, stock_override, is_active )
+      product_variants ( id, product_id, name, value, price_delta, stock_override, image_url, is_active )
     `,
     )
     .eq('id', String(data.id))
@@ -765,6 +673,107 @@ export async function saveProduct(input: {
     throw new Error(nextError.message);
   }
 
+  return mapRowToProduct(nextRow);
+}
+
+export async function restockProduct(
+  productId: string,
+  baseStockDelta: number,
+  variantDeltas?: Record<string, number>,
+): Promise<Product> {
+  if (!supabase) {
+    const idx = localProducts.findIndex((p) => p.id === productId);
+    if (idx < 0) throw new Error('Product not found');
+    const p = localProducts[idx];
+    const nextVariants = p.variants?.map((v) => ({
+      ...v,
+      stockOverride:
+        variantDeltas?.[v.id] != null && v.stockOverride != null
+          ? v.stockOverride + variantDeltas[v.id]
+          : v.stockOverride,
+    }));
+    const variantStocks = (nextVariants ?? [])
+      .filter((variant) => variant.isActive && Number.isFinite(variant.stockOverride))
+      .map((variant) => Number(variant.stockOverride));
+    localProducts[idx] = {
+      ...p,
+      stock: variantStocks.length ? variantStocks.reduce((total, stock) => total + stock, 0) : p.stock + baseStockDelta,
+      variants: nextVariants,
+    };
+    return localProducts[idx];
+  }
+
+  const { data: current, error: fetchErr } = await supabase
+    .from('products')
+    .select('stock, product_variants(id, stock_override, is_active)')
+    .eq('id', productId)
+    .single();
+  if (fetchErr || !current) throw new Error(fetchErr?.message ?? 'Product not found');
+
+  const hasVariantInventory = (current.product_variants ?? []).some(
+    (variant: any) => variant.is_active && variant.stock_override !== null,
+  );
+  if (!hasVariantInventory) {
+    const { error: updErr } = await supabase
+      .from('products')
+      .update({ stock: current.stock + baseStockDelta })
+      .eq('id', productId);
+    if (updErr) throw new Error(updErr.message);
+  }
+
+  if (variantDeltas && Object.keys(variantDeltas).length > 0) {
+    for (const [variantId, delta] of Object.entries(variantDeltas)) {
+      if (delta === 0) continue;
+      const { data: vRow } = await supabase
+        .from('product_variants')
+        .select('stock_override')
+        .eq('id', variantId)
+        .single();
+      if (vRow && vRow.stock_override != null) {
+        const { error: variantError } = await supabase
+          .from('product_variants')
+          .update({ stock_override: vRow.stock_override + delta })
+          .eq('id', variantId);
+        if (variantError) throw new Error(variantError.message);
+      }
+    }
+  }
+
+  if (hasVariantInventory) {
+    const { data: variantRows, error: variantFetchError } = await supabase
+      .from('product_variants')
+      .select('stock_override, is_active')
+      .eq('product_id', productId);
+    if (variantFetchError) throw new Error(variantFetchError.message);
+
+    const totalStock = (variantRows ?? []).reduce((total: number, variant: any) => {
+      if (!variant.is_active || variant.stock_override === null) {
+        return total;
+      }
+      return total + Number(variant.stock_override);
+    }, 0);
+    const { error: totalUpdateError } = await supabase
+      .from('products')
+      .update({ stock: totalStock })
+      .eq('id', productId);
+    if (totalUpdateError) throw new Error(totalUpdateError.message);
+  }
+
+  const { data: nextRow, error: nextError } = await supabase
+    .from('products')
+    .select(
+      `
+      id, name, description, sku, category_id, unit, cost, price, stock, min_stock,
+      image_url, on_sale, sale_price, sort_priority, is_active,
+      categories ( id, name ),
+      product_images ( id, product_id, image_url, sort_order ),
+      product_variants ( id, product_id, name, value, price_delta, stock_override, image_url, is_active )
+    `,
+    )
+    .eq('id', productId)
+    .single();
+
+  if (nextError) throw new Error(nextError.message);
   return mapRowToProduct(nextRow);
 }
 
@@ -944,4 +953,199 @@ export async function fetchDashboardSnapshot(
     lowStockItems,
     recentTransactions,
   };
+}
+
+/* ─── Banners ─── */
+
+export interface Banner {
+  id: string;
+  image_url: string;
+  title: string | null;
+  subtitle: string | null;
+  link_url: string | null;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+}
+
+export async function fetchBanners(): Promise<Banner[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('banners')
+    .select('*')
+    .order('sort_order', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as Banner[];
+}
+
+export async function fetchActiveBanners(): Promise<Banner[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('banners')
+    .select('*')
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as Banner[];
+}
+
+export async function saveBanner(input: { image_url: string; title?: string; subtitle?: string; link_url?: string; sort_order?: number; is_active?: boolean; id?: string }): Promise<Banner> {
+  if (!supabase) throw new Error('Supabase not configured');
+  const payload: Record<string, unknown> = {
+    image_url: input.image_url,
+    title: input.title ?? null,
+    subtitle: input.subtitle ?? null,
+    link_url: input.link_url ?? null,
+    sort_order: input.sort_order ?? 0,
+    is_active: input.is_active ?? true,
+  };
+
+  if (input.id) {
+    const { data, error } = await supabase.from('banners').update(payload).eq('id', input.id).select().single();
+    if (error) throw error;
+    return data as Banner;
+  }
+
+  const { data, error } = await supabase.from('banners').insert(payload).select().single();
+  if (error) throw error;
+  return data as Banner;
+}
+
+export async function deleteBanner(id: string): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.from('banners').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function reorderBanners(orderedIds: string[]): Promise<void> {
+  if (!supabase) return;
+  const updates = orderedIds.map((id, index) =>
+    supabase!.from('banners').update({ sort_order: index }).eq('id', id),
+  );
+  await Promise.all(updates);
+}
+
+// ─── Coupon CRUD ──────────────────────────────────────────────────────────────
+
+export interface CouponRecord {
+  id: string;
+  code: string;
+  description: string;
+  discountType: 'percent' | 'fixed';
+  discountValue: number;
+  minOrder: number;
+  maxDiscount?: number;
+  usageLimit?: number;
+  usedCount: number;
+  isActive: boolean;
+  startsAt?: string;
+  expiresAt?: string;
+  createdAt: string;
+}
+
+export async function fetchCouponsAdmin(): Promise<CouponRecord[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('coupons')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    code: row.code,
+    description: row.description ?? '',
+    discountType: row.discount_type,
+    discountValue: Number(row.discount_value),
+    minOrder: Number(row.min_order ?? 0),
+    maxDiscount: row.max_discount === null ? undefined : Number(row.max_discount),
+    usageLimit: row.usage_limit ?? undefined,
+    usedCount: Number(row.used_count ?? 0),
+    isActive: Boolean(row.is_active ?? true),
+    startsAt: row.starts_at ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function saveCoupon(input: {
+  id?: string;
+  code: string;
+  description?: string;
+  discountType: 'percent' | 'fixed';
+  discountValue: number;
+  minOrder?: number;
+  maxDiscount?: number;
+  usageLimit?: number;
+  isActive?: boolean;
+  startsAt?: string;
+  expiresAt?: string;
+}): Promise<CouponRecord> {
+  if (!supabase) throw new Error('Supabase required.');
+  const payload = {
+    code: input.code.trim(),
+    description: input.description?.trim() ?? '',
+    discount_type: input.discountType,
+    discount_value: input.discountValue,
+    min_order: input.minOrder ?? 0,
+    max_discount: input.maxDiscount ?? null,
+    usage_limit: input.usageLimit ?? null,
+    is_active: input.isActive ?? true,
+    starts_at: input.startsAt ?? null,
+    expires_at: input.expiresAt ?? null,
+  };
+
+  if (input.id) {
+    const { data, error } = await supabase
+      .from('coupons')
+      .update(payload)
+      .eq('id', input.id)
+      .select('*')
+      .single();
+    if (error) throw error;
+    const row = data as any;
+    return {
+      id: row.id,
+      code: row.code,
+      description: row.description ?? '',
+      discountType: row.discount_type,
+      discountValue: Number(row.discount_value),
+      minOrder: Number(row.min_order ?? 0),
+      maxDiscount: row.max_discount === null ? undefined : Number(row.max_discount),
+      usageLimit: row.usage_limit ?? undefined,
+      usedCount: Number(row.used_count ?? 0),
+      isActive: Boolean(row.is_active ?? true),
+      startsAt: row.starts_at ?? undefined,
+      expiresAt: row.expires_at ?? undefined,
+      createdAt: row.created_at,
+    };
+  }
+
+  const { data, error } = await supabase
+    .from('coupons')
+    .insert(payload)
+    .select('*')
+    .single();
+  if (error) throw error;
+  const row = data as any;
+  return {
+    id: row.id,
+    code: row.code,
+    description: row.description ?? '',
+    discountType: row.discount_type,
+    discountValue: Number(row.discount_value),
+    minOrder: Number(row.min_order ?? 0),
+    maxDiscount: row.max_discount === null ? undefined : Number(row.max_discount),
+    usageLimit: row.usage_limit ?? undefined,
+    usedCount: 0,
+    isActive: Boolean(row.is_active ?? true),
+    startsAt: row.starts_at ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+export async function deleteCoupon(id: string): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.from('coupons').delete().eq('id', id);
+  if (error) throw error;
 }

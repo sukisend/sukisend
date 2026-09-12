@@ -1,8 +1,6 @@
-import { Asset } from 'expo-asset';
-import * as FileSystem from 'expo-file-system/legacy';
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { Ionicons } from '@expo/vector-icons';
+import { useMemo, useState } from 'react';
+import { Image, LayoutChangeEvent, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 interface Coordinate {
   latitude: number;
@@ -17,9 +15,41 @@ interface TrackingMapProps {
   routeColor?: string;
 }
 
-const FALLBACK_CENTER: Coordinate = { latitude: 14.5995, longitude: 120.9842 };
-const STORE_LOGO_ASSET = require('../../assets/suki-send-logo.png');
-const RIDER_ICON_ASSET = require('../../assets/rider.png');
+interface ProjectedPoint {
+  x: number;
+  y: number;
+}
+
+interface TileDescriptor {
+  key: string;
+  left: number;
+  top: number;
+  uri: string;
+}
+
+interface LineSegment {
+  key: string;
+  left: number;
+  top: number;
+  width: number;
+  angle: number;
+}
+
+interface PreviewLayout {
+  height: number;
+  tiles: TileDescriptor[];
+  routeSegments: LineSegment[];
+  originPoint: ProjectedPoint | null;
+  destinationPoint: ProjectedPoint | null;
+  riderPoint: ProjectedPoint | null;
+}
+
+const TILE_SIZE = 256;
+const MIN_ZOOM = 5;
+const MAX_ZOOM = 16;
+const MAP_PADDING = 34;
+const STORE_LOGO = require('../../assets/suki-send-logo.png');
+const RIDER_LOGO = require('../../assets/rider.png');
 
 function isCoordinateValid(point: Coordinate | null | undefined): point is Coordinate {
   if (!point) {
@@ -34,8 +64,9 @@ function dedupe(points: Coordinate[]) {
     if (index === 0) {
       return true;
     }
-    const prev = points[index - 1];
-    return point.latitude !== prev.latitude || point.longitude !== prev.longitude;
+
+    const previous = points[index - 1];
+    return point.latitude !== previous.latitude || point.longitude !== previous.longitude;
   });
 }
 
@@ -50,6 +81,7 @@ function simplifyCoordinates(points: Coordinate[], maxPoints: number) {
 
   const stride = Math.ceil(points.length / maxPoints);
   const simplified: Coordinate[] = [];
+
   for (let index = 0; index < points.length; index += stride) {
     simplified.push(points[index]);
   }
@@ -63,377 +95,194 @@ function simplifyCoordinates(points: Coordinate[], maxPoints: number) {
   return dedupe(simplified);
 }
 
-async function assetModuleToDataUri(moduleId: number) {
-  try {
-    const asset = Asset.fromModule(moduleId);
-    if (!asset.localUri) {
-      await asset.downloadAsync();
+function mergeFitPoints(route: Coordinate[], extras: Array<Coordinate | null | undefined>) {
+  const seen = new Set<string>();
+  return [...route, ...extras.filter((point): point is Coordinate => Boolean(point))].filter((point) => {
+    const key = `${point.latitude.toFixed(6)},${point.longitude.toFixed(6)}`;
+    if (seen.has(key)) {
+      return false;
     }
 
-    const sourceUri = asset.localUri ?? asset.uri;
-    if (!sourceUri) {
-      return null;
-    }
-
-    let base64 = '';
-    try {
-      base64 = await FileSystem.readAsStringAsync(sourceUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-    } catch {
-      if (!sourceUri.startsWith('http://') && !sourceUri.startsWith('https://')) {
-        return null;
-      }
-
-      const cacheFile = `${FileSystem.cacheDirectory ?? ''}sukisend-map-icon-${moduleId}.png`;
-      if (!cacheFile) {
-        return null;
-      }
-
-      const downloaded = await FileSystem.downloadAsync(sourceUri, cacheFile);
-      base64 = await FileSystem.readAsStringAsync(downloaded.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-    }
-
-    if (!base64) {
-      return null;
-    }
-
-    return `data:image/png;base64,${base64}`;
-  } catch {
-    return null;
-  }
+    seen.add(key);
+    return true;
+  });
 }
 
-function buildLeafletHtml(payload: {
-  route: Coordinate[];
-  origin: Coordinate | null;
-  destination: Coordinate | null;
-  rider: Coordinate | null;
-  routeColor: string;
-  storeLogoUri: string | null;
-  riderIconUri: string | null;
-}) {
-  const jsonPayload = JSON.stringify(payload);
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <style>
-    html, body, #map {
-      height: 100%;
-      margin: 0;
-      padding: 0;
-      background: #0f172a;
-      font-family: Arial, sans-serif;
+function samePoint(a: Coordinate | null | undefined, b: Coordinate | null | undefined) {
+  if (!a || !b) {
+    return false;
+  }
+
+  return Math.abs(a.latitude - b.latitude) < 0.00001 && Math.abs(a.longitude - b.longitude) < 0.00001;
+}
+
+function offsetPoint(point: Coordinate, latitudeOffset: number, longitudeOffset: number): Coordinate {
+  return {
+    latitude: point.latitude + latitudeOffset,
+    longitude: point.longitude + longitudeOffset,
+  };
+}
+
+function projectCoordinate(point: Coordinate, zoom: number): ProjectedPoint {
+  const scale = TILE_SIZE * 2 ** zoom;
+  const clampedSine = Math.min(Math.max(Math.sin((point.latitude * Math.PI) / 180), -0.9999), 0.9999);
+
+  return {
+    x: ((point.longitude + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + clampedSine) / (1 - clampedSine)) / (4 * Math.PI)) * scale,
+  };
+}
+
+function toRelativePoint(projected: ProjectedPoint, left: number, top: number): ProjectedPoint {
+  return {
+    x: projected.x - left,
+    y: projected.y - top,
+  };
+}
+
+function createSegments(points: ProjectedPoint[]) {
+  const segments: LineSegment[] = [];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    const deltaX = end.x - start.x;
+    const deltaY = end.y - start.y;
+    const width = Math.hypot(deltaX, deltaY);
+
+    if (!Number.isFinite(width) || width < 1) {
+      continue;
     }
-    #map {
-      width: 100%;
-    }
-    .leaflet-control-zoom a {
-      width: 48px !important;
-      height: 48px !important;
-      line-height: 46px !important;
-      font-size: 26px !important;
-      font-weight: 700;
-    }
-    .leaflet-control-attribution {
-      font-size: 10px;
-    }
-    .marker-bubble {
-      width: 26px;
-      height: 26px;
-      border-radius: 999px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #fff;
-      font-size: 11px;
-      font-weight: 800;
-      border: 1px solid rgba(15, 23, 42, 0.7);
-      box-shadow: 0 2px 6px rgba(2, 6, 23, 0.4);
-    }
-    .store-bubble {
-      background: #1d4ed8;
-    }
-    .customer-bubble {
-      background: #e11d48;
-    }
-    .rider-bubble {
-      background: #f97316;
-    }
-    .store-pin {
-      width: 50px;
-      height: 50px;
-      border: 2px solid #1D4ED8;
-      border-radius: 999px;
-      background: #FFFFFF;
-      box-shadow: 0 3px 8px rgba(2, 6, 23, 0.35);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-    }
-    .store-pin img {
-      width: 40px;
-      height: 40px;
-      object-fit: contain;
-      display: block;
-    }
-    .rider-pin {
-      width: 60px;
-      height: 60px;
-      border: 2px solid #F97316;
-      border-radius: 999px;
-      background: #FFFFFF;
-      box-shadow: 0 4px 9px rgba(2, 6, 23, 0.35);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-    }
-    .rider-pin img {
-      width: 48px;
-      height: 48px;
-      object-fit: contain;
-      display: block;
-    }
-    .pin-fallback {
-      font-size: 20px;
-      font-weight: 800;
-      line-height: 1;
-    }
-    .customer-pin {
-      width: 28px;
-      height: 28px;
-      border-radius: 999px;
-      background: #E11D48;
-      border: 1px solid rgba(15, 23, 42, 0.72);
-      box-shadow: 0 2px 6px rgba(2, 6, 23, 0.4);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-    }
-    .customer-head {
-      display: block;
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: #FFFFFF;
-      margin-bottom: 1px;
-    }
-    .customer-body {
-      display: block;
-      width: 11px;
-      height: 6px;
-      border-radius: 7px 7px 4px 4px;
-      background: #FFFFFF;
-    }
-    #recenter {
-      position: absolute;
-      left: 10px;
-      top: 12px;
-      z-index: 1000;
-      display: none;
-      border: 1px solid #334155;
-      background: rgba(15, 23, 42, 0.88);
-      color: #fff;
-      border-radius: 999px;
-      font-size: 15px;
-      font-weight: 800;
-      padding: 11px 16px;
-    }
-  </style>
-</head>
-<body>
-  <button id="recenter">Recenter</button>
-  <div id="map"></div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    const payload = ${jsonPayload};
-    const map = L.map('map', {
-      zoomControl: true,
-      preferCanvas: true,
-      attributionControl: true,
+
+    segments.push({
+      key: `route-segment-${index}`,
+      left: start.x,
+      top: start.y,
+      width,
+      angle: (Math.atan2(deltaY, deltaX) * 180) / Math.PI,
     });
+  }
 
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors',
-    }).addTo(map);
+  return segments;
+}
 
-    const recenterButton = document.getElementById('recenter');
+function chooseZoom(points: Coordinate[], width: number, height: number, padding: number) {
+  if (points.length <= 1) {
+    return 14;
+  }
 
-    function markerBubbleIcon(kind, label) {
-      return L.divIcon({
-        className: '',
-        html: '<div class="marker-bubble ' + kind + '">' + label + '</div>',
-        iconSize: [26, 26],
-        iconAnchor: [13, 13],
+  const availableWidth = Math.max(1, width - padding * 2);
+  const availableHeight = Math.max(1, height - padding * 2);
+
+  for (let zoom = MAX_ZOOM; zoom >= MIN_ZOOM; zoom -= 1) {
+    const projected = points.map((point) => projectCoordinate(point, zoom));
+    const xValues = projected.map((point) => point.x);
+    const yValues = projected.map((point) => point.y);
+    const spanX = Math.max(...xValues) - Math.min(...xValues);
+    const spanY = Math.max(...yValues) - Math.min(...yValues);
+
+    if (spanX <= availableWidth && spanY <= availableHeight) {
+      return zoom;
+    }
+  }
+
+  return MIN_ZOOM;
+}
+
+function buildPreviewLayout(
+  width: number,
+  height: number,
+  route: Coordinate[],
+  origin: Coordinate | null,
+  destination: Coordinate | null,
+  rider: Coordinate | null,
+): PreviewLayout | null {
+  if (width < 40 || height < 40) {
+    return null;
+  }
+
+  const fitPoints = mergeFitPoints(route, [origin, rider, destination]);
+  if (!fitPoints.length) {
+    return null;
+  }
+
+  const zoom = chooseZoom(fitPoints, width, height, MAP_PADDING);
+  const projectedFitPoints = fitPoints.map((point) => projectCoordinate(point, zoom));
+  const projectedRoute = route.map((point) => projectCoordinate(point, zoom));
+
+  const xValues = projectedFitPoints.map((point) => point.x);
+  const yValues = projectedFitPoints.map((point) => point.y);
+  const centerX =
+    projectedFitPoints.length === 1
+      ? projectedFitPoints[0].x
+      : (Math.min(...xValues) + Math.max(...xValues)) / 2;
+  const centerY =
+    projectedFitPoints.length === 1
+      ? projectedFitPoints[0].y
+      : (Math.min(...yValues) + Math.max(...yValues)) / 2;
+  const topLeftX = centerX - width / 2;
+  const topLeftY = centerY - height / 2;
+
+  const routePoints = projectedRoute.map((point) => toRelativePoint(point, topLeftX, topLeftY));
+  const routeSegments = createSegments(routePoints);
+
+  const tileCount = 2 ** zoom;
+  const startTileX = Math.floor(topLeftX / TILE_SIZE);
+  const endTileX = Math.floor((topLeftX + width) / TILE_SIZE);
+  const startTileY = Math.floor(topLeftY / TILE_SIZE);
+  const endTileY = Math.floor((topLeftY + height) / TILE_SIZE);
+  const tiles: TileDescriptor[] = [];
+
+  for (let tileY = startTileY; tileY <= endTileY; tileY += 1) {
+    if (tileY < 0 || tileY >= tileCount) {
+      continue;
+    }
+
+    for (let tileX = startTileX; tileX <= endTileX; tileX += 1) {
+      const wrappedTileX = ((tileX % tileCount) + tileCount) % tileCount;
+      tiles.push({
+        key: `tile-${zoom}-${wrappedTileX}-${tileY}`,
+        left: tileX * TILE_SIZE - topLeftX,
+        top: tileY * TILE_SIZE - topLeftY,
+        uri: `https://tile.openstreetmap.org/${zoom}/${wrappedTileX}/${tileY}.png`,
       });
     }
+  }
 
-    function customerIcon() {
-      return L.divIcon({
-        className: '',
-        html: '<div class="customer-pin"><span class="customer-head"></span><span class="customer-body"></span></div>',
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-      });
-    }
+  return {
+    height,
+    tiles,
+    routeSegments,
+    originPoint: origin ? toRelativePoint(projectCoordinate(origin, zoom), topLeftX, topLeftY) : null,
+    destinationPoint: destination ? toRelativePoint(projectCoordinate(destination, zoom), topLeftX, topLeftY) : null,
+    riderPoint: rider ? toRelativePoint(projectCoordinate(rider, zoom), topLeftX, topLeftY) : null,
+  };
+}
 
-    function storeIcon() {
-      if (!payload.storeLogoUri) {
-        return markerBubbleIcon('store-bubble', '🏪');
-      }
+function StoreMarker({ point }: { point: ProjectedPoint }) {
+  return (
+    <View style={[styles.markerBase, styles.storeMarker, { left: point.x - 20, top: point.y - 20 }]}>
+      <Image source={STORE_LOGO} style={styles.storeMarkerImage} resizeMode="contain" />
+    </View>
+  );
+}
 
-      return L.divIcon({
-        className: '',
-        html: '<div class="store-pin"><img src="' + payload.storeLogoUri + '" alt="" onerror="this.style.display=\\'none\\';this.parentNode.classList.add(\\'pin-fallback\\');this.parentNode.textContent=\\'🏪\\';"/></div>',
-        iconSize: [50, 50],
-        iconAnchor: [25, 25],
-      });
-    }
+function RiderMarker({ point }: { point: ProjectedPoint }) {
+  return (
+    <View style={[styles.markerBase, styles.riderMarker, { left: point.x - 24, top: point.y - 24 }]}>
+      <Image source={RIDER_LOGO} style={styles.riderMarkerImage} resizeMode="contain" />
+    </View>
+  );
+}
 
-    function riderIcon() {
-      if (!payload.riderIconUri) {
-        return markerBubbleIcon('rider-bubble', '🏍️');
-      }
-
-      return L.divIcon({
-        className: '',
-        html: '<div class="rider-pin"><img src="' + payload.riderIconUri + '" alt="" onerror="this.style.display=\\'none\\';this.parentNode.classList.add(\\'pin-fallback\\');this.parentNode.textContent=\\'🏍️\\';"/></div>',
-        iconSize: [60, 60],
-        iconAnchor: [30, 30],
-      });
-    }
-
-    function normalize(point) {
-      if (!point) {
-        return null;
-      }
-      if (!Number.isFinite(point.latitude) || !Number.isFinite(point.longitude)) {
-        return null;
-      }
-      return [point.latitude, point.longitude];
-    }
-
-    function toBounds(points) {
-      const first = points[0];
-      let minLat = first[0];
-      let maxLat = first[0];
-      let minLng = first[1];
-      let maxLng = first[1];
-
-      for (let i = 1; i < points.length; i += 1) {
-        const row = points[i];
-        if (row[0] < minLat) minLat = row[0];
-        if (row[0] > maxLat) maxLat = row[0];
-        if (row[1] < minLng) minLng = row[1];
-        if (row[1] > maxLng) maxLng = row[1];
-      }
-
-      return [[minLat, minLng], [maxLat, maxLng]];
-    }
-
-    const route = Array.isArray(payload.route)
-      ? payload.route
-          .map((point) => normalize(point))
-          .filter(Boolean)
-      : [];
-
-    const origin = normalize(payload.origin);
-    const destination = normalize(payload.destination);
-    const rider = normalize(payload.rider);
-
-    function samePoint(a, b) {
-      if (!a || !b) {
-        return false;
-      }
-      return Math.abs(a[0] - b[0]) < 0.00001 && Math.abs(a[1] - b[1]) < 0.00001;
-    }
-
-    function offsetPoint(point, latOffset, lngOffset) {
-      return [point[0] + latOffset, point[1] + lngOffset];
-    }
-
-    const originMarkerPoint = origin && samePoint(origin, rider) ? offsetPoint(origin, 0.00045, -0.00045) : origin;
-    const destinationMarkerPoint = destination && samePoint(destination, rider)
-      ? offsetPoint(destination, -0.00045, 0.00045)
-      : destination;
-
-    if (originMarkerPoint) {
-      L.marker(originMarkerPoint, { icon: storeIcon() }).addTo(map);
-    }
-    if (destinationMarkerPoint) {
-      L.marker(destinationMarkerPoint, { icon: customerIcon() }).addTo(map);
-    }
-    if (rider) {
-      L.marker(rider, { icon: riderIcon() }).addTo(map);
-    }
-
-    if (route.length > 1) {
-      L.polyline(route, {
-        color: '#0F172A',
-        weight: 9,
-        opacity: 0.32,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }).addTo(map);
-      L.polyline(route, {
-        color: payload.routeColor || '#F97316',
-        weight: 6,
-        opacity: 0.95,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }).addTo(map);
-    }
-
-    const fitPoints = route.length
-      ? route
-      : [origin, rider, destination].filter(Boolean);
-
-    function fitToPoints() {
-      if (!fitPoints.length) {
-        map.setView([${FALLBACK_CENTER.latitude}, ${FALLBACK_CENTER.longitude}], 7);
-        return;
-      }
-
-      if (fitPoints.length === 1) {
-        map.setView(fitPoints[0], 14);
-        return;
-      }
-
-      map.fitBounds(toBounds(fitPoints), {
-        padding: [24, 24],
-        maxZoom: 16,
-      });
-    }
-
-    fitToPoints();
-
-    let userMoved = false;
-    function showRecenter() {
-      recenterButton.style.display = userMoved ? 'block' : 'none';
-    }
-
-    map.on('dragstart zoomstart', function () {
-      userMoved = true;
-      showRecenter();
-    });
-
-    recenterButton.addEventListener('click', function () {
-      userMoved = false;
-      showRecenter();
-      fitToPoints();
-    });
-  </script>
-</body>
-</html>`;
+function CustomerMarker({ point }: { point: ProjectedPoint }) {
+  return (
+    <View style={[styles.markerBase, styles.customerMarker, { left: point.x - 16, top: point.y - 16 }]}>
+      <View style={styles.customerAvatar}>
+        <Ionicons name="person" size={12} color="#0F172A" />
+      </View>
+    </View>
+  );
 }
 
 export function TrackingMap({
@@ -443,35 +292,10 @@ export function TrackingMap({
   routeCoordinates = [],
   routeColor = '#DC2626',
 }: TrackingMapProps) {
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-  const [mapIcons, setMapIcons] = useState<{ storeLogoUri: string | null; riderIconUri: string | null }>({
-    storeLogoUri: null,
-    riderIconUri: null,
-  });
+  const window = useWindowDimensions();
+  const [mapWidth, setMapWidth] = useState(0);
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      const [storeLogoDataUri, riderDataUri] = await Promise.all([
-        assetModuleToDataUri(STORE_LOGO_ASSET),
-        assetModuleToDataUri(RIDER_ICON_ASSET),
-      ]);
-
-      if (!active) {
-        return;
-      }
-
-      setMapIcons({
-        storeLogoUri: storeLogoDataUri,
-        riderIconUri: riderDataUri,
-      });
-    })();
-
-    return () => {
-      active = false;
-    };
-  }, []);
+  const mapHeight = useMemo(() => Math.max(220, Math.min(280, Math.round(window.width * 0.62))), [window.width]);
 
   const safeCoordinates = useMemo(
     () => simplifyCoordinates(coordinates.filter((point) => isCoordinateValid(point)), 80),
@@ -486,112 +310,234 @@ export function TrackingMap({
     if (isCoordinateValid(destination)) {
       return destination;
     }
+
     if (safeRouteCoordinates.length > 1) {
       return safeRouteCoordinates[safeRouteCoordinates.length - 1];
     }
+
     return null;
   }, [destination, safeRouteCoordinates]);
   const riderPosition = useMemo(() => {
     if (safeCoordinates.length) {
       return safeCoordinates[safeCoordinates.length - 1];
     }
+
     if (safeRouteCoordinates.length) {
       return safeRouteCoordinates[0];
     }
+
     return safeOrigin;
-  }, [safeCoordinates, safeRouteCoordinates, safeOrigin]);
+  }, [safeCoordinates, safeOrigin, safeRouteCoordinates]);
+  const route = useMemo(() => {
+    if (safeRouteCoordinates.length > 1) {
+      return simplifyCoordinates(safeRouteCoordinates, 180);
+    }
 
-  const route = useMemo(
-    () => {
-      if (safeRouteCoordinates.length > 1) {
-        return simplifyCoordinates(safeRouteCoordinates, 180);
-      }
-      if (safeCoordinates.length > 1) {
-        return simplifyCoordinates(safeCoordinates, 120);
-      }
-      return [];
-    },
-    [safeCoordinates, safeRouteCoordinates],
-  );
+    if (safeCoordinates.length > 1) {
+      return simplifyCoordinates(safeCoordinates, 120);
+    }
 
-  const mapPoints = useMemo(
+    return [];
+  }, [safeCoordinates, safeRouteCoordinates]);
+
+  const originMarkerPoint = useMemo(() => {
+    if (!safeOrigin) {
+      return null;
+    }
+
+    return samePoint(safeOrigin, riderPosition) ? offsetPoint(safeOrigin, 0.00035, -0.00035) : safeOrigin;
+  }, [riderPosition, safeOrigin]);
+  const destinationMarkerPoint = useMemo(() => {
+    if (!safeDestination) {
+      return null;
+    }
+
+    return samePoint(safeDestination, riderPosition) ? offsetPoint(safeDestination, -0.00035, 0.00035) : safeDestination;
+  }, [riderPosition, safeDestination]);
+
+  const layout = useMemo(
     () =>
-      route.length
-        ? route
-        : [safeOrigin, riderPosition, safeDestination].filter((point): point is Coordinate => Boolean(point)),
-    [route, riderPosition, safeDestination, safeOrigin],
+      buildPreviewLayout(
+        mapWidth,
+        mapHeight,
+        route,
+        originMarkerPoint,
+        destinationMarkerPoint,
+        riderPosition,
+      ),
+    [destinationMarkerPoint, mapHeight, mapWidth, originMarkerPoint, riderPosition, route],
   );
 
-  if (!mapPoints.length) {
+  if (!mergeFitPoints(route, [safeOrigin, riderPosition, safeDestination]).length) {
     return null;
   }
 
-  const html = useMemo(
-    () =>
-      buildLeafletHtml({
-        route,
-        origin: safeOrigin,
-        destination: safeDestination,
-        rider: riderPosition,
-        routeColor,
-        storeLogoUri: mapIcons.storeLogoUri,
-        riderIconUri: mapIcons.riderIconUri,
-      }),
-    [mapIcons.riderIconUri, mapIcons.storeLogoUri, route, routeColor, riderPosition, safeDestination, safeOrigin],
-  );
+  const handleLayout = (event: LayoutChangeEvent) => {
+    const nextWidth = Math.round(event.nativeEvent.layout.width);
+    if (nextWidth && nextWidth !== mapWidth) {
+      setMapWidth(nextWidth);
+    }
+  };
 
   return (
-    <View style={styles.mapWrap}>
-      <WebView
-        source={{ html }}
-        style={styles.map}
-        originWhitelist={['*']}
-        javaScriptEnabled
-        domStorageEnabled
-        onLoadStart={() => {
-          setLoading(true);
-          setFailed(false);
-        }}
-        onLoadEnd={() => setLoading(false)}
-        onError={() => {
-          setLoading(false);
-          setFailed(true);
-        }}
-        setSupportMultipleWindows={false}
-      />
-
-      {loading ? (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="small" color="#FFFFFF" />
-          <Text style={styles.loadingText}>Loading map...</Text>
-        </View>
-      ) : null}
-      {failed ? (
-        <View style={styles.errorOverlay}>
-          <Text style={styles.errorText}>Map failed to load. Please check network and try again.</Text>
-        </View>
-      ) : null}
+    <View style={[styles.mapWrap, { height: mapHeight }]} onLayout={handleLayout}>
+      <View style={styles.mapSurface}>
+        {layout ? (
+          <>
+            {layout.tiles.map((tile) => (
+              <Image key={tile.key} source={{ uri: tile.uri }} style={[styles.tile, { left: tile.left, top: tile.top }]} />
+            ))}
+            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+              {layout.routeSegments.map((segment) => (
+                <View
+                  key={`${segment.key}-shadow`}
+                  style={[
+                    styles.routeShadow,
+                    {
+                      left: segment.left + segment.width / 2,
+                      top: segment.top,
+                      width: segment.width,
+                      transform: [
+                        { translateX: -segment.width / 2 },
+                        { translateY: -4.5 },
+                        { rotate: `${segment.angle}deg` },
+                      ],
+                    },
+                  ]}
+                />
+              ))}
+              {layout.routeSegments.map((segment) => (
+                <View
+                  key={segment.key}
+                  style={[
+                    styles.routeLine,
+                    {
+                      backgroundColor: routeColor,
+                      left: segment.left + segment.width / 2,
+                      top: segment.top,
+                      width: segment.width,
+                      transform: [
+                        { translateX: -segment.width / 2 },
+                        { translateY: -3 },
+                        { rotate: `${segment.angle}deg` },
+                      ],
+                    },
+                  ]}
+                />
+              ))}
+            </View>
+            {layout.originPoint ? <StoreMarker point={layout.originPoint} /> : null}
+            {layout.destinationPoint ? <CustomerMarker point={layout.destinationPoint} /> : null}
+            {layout.riderPoint ? <RiderMarker point={layout.riderPoint} /> : null}
+          </>
+        ) : (
+          <View style={styles.loadingOverlay}>
+            <Text style={styles.loadingText}>Loading live map preview...</Text>
+          </View>
+        )}
+      </View>
+      <View style={styles.captionRow}>
+        <Text style={styles.captionText}>Live route preview auto-fits the rider, store, and receiver locations.</Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   mapWrap: {
+    alignSelf: 'center',
     borderRadius: 12,
-    height: 360,
     marginTop: 10,
+    maxWidth: 420,
     overflow: 'hidden',
-    position: 'relative',
     width: '100%',
   },
-  map: {
-    backgroundColor: '#0F172A',
-    height: '100%',
-    width: '100%',
+  mapSurface: {
+    backgroundColor: '#DBEAFE',
+    borderRadius: 12,
+    flex: 1,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  tile: {
+    height: TILE_SIZE,
+    position: 'absolute',
+    width: TILE_SIZE,
+  },
+  routeShadow: {
+    backgroundColor: 'rgba(15, 23, 42, 0.3)',
+    borderRadius: 999,
+    height: 9,
+    position: 'absolute',
+  },
+  routeLine: {
+    borderRadius: 999,
+    height: 6,
+    position: 'absolute',
+  },
+  markerBase: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'absolute',
+  },
+  storeMarker: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#1D4ED8',
+    borderRadius: 999,
+    borderWidth: 2,
+    elevation: 4,
+    height: 40,
+    shadowColor: '#020617',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.24,
+    shadowRadius: 5,
+    width: 40,
+  },
+  storeMarkerImage: {
+    height: 30,
+    width: 30,
+  },
+  riderMarker: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#F97316',
+    borderRadius: 999,
+    borderWidth: 2,
+    elevation: 4,
+    height: 48,
+    shadowColor: '#020617',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.24,
+    shadowRadius: 5,
+    width: 48,
+  },
+  riderMarkerImage: {
+    height: 36,
+    width: 36,
+  },
+  customerMarker: {
+    backgroundColor: '#E11D48',
+    borderColor: '#831843',
+    borderRadius: 999,
+    borderWidth: 2,
+    elevation: 4,
+    height: 32,
+    shadowColor: '#020617',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.24,
+    shadowRadius: 4,
+    width: 32,
+  },
+  customerAvatar: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    height: 18,
+    justifyContent: 'center',
+    width: 18,
   },
   loadingOverlay: {
     alignItems: 'center',
-    backgroundColor: 'rgba(2, 6, 23, 0.52)',
+    backgroundColor: 'rgba(2, 6, 23, 0.2)',
     bottom: 0,
     justifyContent: 'center',
     left: 0,
@@ -600,22 +546,15 @@ const styles = StyleSheet.create({
     top: 0,
   },
   loadingText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 6,
+    color: '#0F172A',
+    fontSize: 12,
+    fontWeight: '700',
   },
-  errorOverlay: {
-    backgroundColor: 'rgba(2, 6, 23, 0.76)',
-    borderRadius: 8,
-    bottom: 8,
-    left: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    position: 'absolute',
+  captionRow: {
+    paddingTop: 8,
   },
-  errorText: {
-    color: '#FFFFFF',
+  captionText: {
+    color: '#64748B',
     fontSize: 11,
     fontWeight: '600',
   },

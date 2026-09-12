@@ -1,9 +1,9 @@
-export interface BarangayCityMap {
+interface BarangayCityMap {
   city: string;
   barangays: string[];
 }
 
-export interface ProvinceMap {
+interface ProvinceMap {
   province: string;
   cities: BarangayCityMap[];
 }

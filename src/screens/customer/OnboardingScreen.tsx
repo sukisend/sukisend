@@ -59,7 +59,7 @@ const styles = StyleSheet.create({
   title: {
     color: '#111827',
     fontSize: 30,
-    fontWeight: '900',
+    fontWeight: '600',
     letterSpacing: 0.8,
     textAlign: 'center',
   },
@@ -95,7 +95,7 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: '600',
     textAlign: 'center',
   },
 });

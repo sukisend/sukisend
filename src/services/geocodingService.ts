@@ -1,9 +1,9 @@
-export interface GeoPoint {
+interface GeoPoint {
   latitude: number;
   longitude: number;
 }
 
-export interface ReverseGeocodeResult {
+interface ReverseGeocodeResult {
   countryRegion?: string;
   province?: string;
   city?: string;

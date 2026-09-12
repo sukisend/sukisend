@@ -1,9 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo, useState } from 'react';
-import { FlatList, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useId, useMemo, useState } from 'react';
+import { FlatList, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { AppTextInput } from './AppTextInput';
 import { ModalBackdrop } from './ModalBackdrop';
 import { useTheme } from '../providers/ThemeProvider';
+import { blurActiveWebElement, buildWebInputId } from '../utils/webAccessibility';
 
 interface SearchableDropdownProps {
   label: string;
@@ -14,20 +16,13 @@ interface SearchableDropdownProps {
   allowCustom?: boolean;
 }
 
-function blurActiveWebElement() {
-  if (Platform.OS !== 'web' || typeof document === 'undefined') {
-    return;
-  }
-
-  const activeElement = document.activeElement as HTMLElement | null;
-  activeElement?.blur?.();
-}
-
 export function SearchableDropdown({ label, placeholder, value, options, onSelect, allowCustom = false }: SearchableDropdownProps) {
   const { theme } = useTheme();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const isWeb = Platform.OS === 'web';
+  const dropdownId = useId();
+  const searchInputId = buildWebInputId('searchable-dropdown', dropdownId, label, 'search');
 
   const closeDropdown = () => {
     blurActiveWebElement();
@@ -63,12 +58,15 @@ export function SearchableDropdown({ label, placeholder, value, options, onSelec
         ]}
       >
         <Ionicons name="search-outline" size={16} color={theme.colors.textMuted} />
-        <TextInput
+        <AppTextInput
+          nativeID={searchInputId}
+          webName={buildWebInputId('searchable-dropdown', dropdownId, label, 'name')}
           value={search}
           onChangeText={setSearch}
           placeholder={`Search ${label.toLowerCase()}...`}
           placeholderTextColor={theme.colors.textMuted}
           style={[styles.searchInput, { color: theme.colors.text }]}
+          accessibilityLabel={`Search ${label}`}
           autoFocus
           onSubmitEditing={() => {
             if (showCustomOption) {
@@ -145,10 +143,12 @@ export function SearchableDropdown({ label, placeholder, value, options, onSelec
           },
         ]}
         onPress={() => {
+          blurActiveWebElement();
           setSearch(value);
           setOpen(true);
         }}
         hitSlop={4}
+        accessibilityLabel={`Open ${label} options`}
       >
         <Text
           style={[
@@ -239,7 +239,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 17,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   closeBtn: {
     alignItems: 'center',

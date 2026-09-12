@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -127,26 +128,26 @@ export function AdminReportsScreen() {
             <MetricCard
               label="Gross Sales"
               value={formatPHP(snapshot.metrics.grossSales)}
-              accentColor="#22C55E"
-              tintColor={theme.isDark ? 'rgba(34, 197, 94, 0.16)' : 'rgba(34, 197, 94, 0.11)'}
+              accentColor="#E06D3B"
+              tintColor={theme.isDark ? 'rgba(224, 109, 59, 0.16)' : 'rgba(224, 109, 59, 0.08)'}
             />
             <MetricCard
               label="Paid Orders"
               value={`${snapshot.metrics.totalOrders}`}
-              accentColor="#3B82F6"
-              tintColor={theme.isDark ? 'rgba(59, 130, 246, 0.15)' : 'rgba(59, 130, 246, 0.1)'}
+              accentColor="#E06D3B"
+              tintColor={theme.isDark ? 'rgba(224, 109, 59, 0.16)' : 'rgba(224, 109, 59, 0.08)'}
             />
             <MetricCard
               label="Profit"
               value={formatPHP(snapshot.metrics.profit)}
-              accentColor="#14B8A6"
-              tintColor={theme.isDark ? 'rgba(20, 184, 166, 0.16)' : 'rgba(20, 184, 166, 0.1)'}
+              accentColor="#E06D3B"
+              tintColor={theme.isDark ? 'rgba(224, 109, 59, 0.16)' : 'rgba(224, 109, 59, 0.08)'}
             />
             <MetricCard
               label="Top Product"
               value={snapshot.metrics.topSellingProduct}
-              accentColor="#F97316"
-              tintColor={theme.isDark ? 'rgba(249, 115, 22, 0.16)' : 'rgba(249, 115, 22, 0.11)'}
+              accentColor="#E06D3B"
+              tintColor={theme.isDark ? 'rgba(224, 109, 59, 0.16)' : 'rgba(224, 109, 59, 0.08)'}
             />
           </View>
 
@@ -156,35 +157,28 @@ export function AdminReportsScreen() {
               Swipe across cards and pick your preferred output format.
             </Text>
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.exportCardsRow}>
+            <View style={styles.exportBtnsRow}>
               <Pressable
-                style={[styles.exportCard, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
+                style={[styles.exportBtn, { backgroundColor: '#E53935', borderColor: '#C62828' }]}
                 onPress={() => runExport('pdf')}
                 disabled={Boolean(exporting)}
               >
-                <Text style={[styles.exportTitle, { color: theme.colors.text }]}>PDF Report</Text>
-                <Text style={[styles.exportSub, { color: theme.colors.textMuted }]}>
-                  Professional layout for management and printable reports.
-                </Text>
-                <Text style={[styles.exportAction, { color: theme.colors.primary }]}>
+                <Ionicons name="document-text-outline" size={13} color="#FFFFFF" />
+                <Text style={[styles.exportBtnText, { color: '#FFFFFF' }]}>
                   {exporting === 'pdf' ? 'Exporting...' : 'Export as PDF'}
                 </Text>
               </Pressable>
-
               <Pressable
-                style={[styles.exportCard, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}
+                style={[styles.exportBtn, { backgroundColor: '#2E7D32', borderColor: '#1B5E20' }]}
                 onPress={() => runExport('xlsx')}
                 disabled={Boolean(exporting)}
               >
-                <Text style={[styles.exportTitle, { color: theme.colors.text }]}>Excel / XLSX</Text>
-                <Text style={[styles.exportSub, { color: theme.colors.textMuted }]}>
-                  Spreadsheet-friendly file for deeper review and accounting.
-                </Text>
-                <Text style={[styles.exportAction, { color: theme.colors.primary }]}>
+                <Ionicons name="grid-outline" size={13} color="#FFFFFF" />
+                <Text style={[styles.exportBtnText, { color: '#FFFFFF' }]}>
                   {exporting === 'xlsx' ? 'Exporting...' : 'Export as XLSX'}
                 </Text>
               </Pressable>
-            </ScrollView>
+            </View>
           </View>
 
           <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
@@ -246,26 +240,46 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   cardSub: {
     fontSize: 12,
     fontWeight: '500',
   },
+  exportBtnsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+  },
+  exportBtn: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  exportBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  // legacy (unused)
   exportCardsRow: {
     gap: 10,
+    paddingHorizontal: 16,
     paddingVertical: 2,
   },
   exportCard: {
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     minHeight: 130,
-    padding: 12,
-    width: 240,
+    padding: 14,
+    width: 220,
   },
   exportTitle: {
     fontSize: 15,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   exportSub: {
     fontSize: 12,
@@ -274,7 +288,7 @@ const styles = StyleSheet.create({
   },
   exportAction: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
     marginTop: 10,
   },
   entryRow: {
@@ -292,7 +306,7 @@ const styles = StyleSheet.create({
   },
   entryValue: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   refreshButton: {
     borderRadius: 10,

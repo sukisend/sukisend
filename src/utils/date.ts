@@ -58,10 +58,6 @@ export function buildDateRange(preset: SalesRangePreset, customRange?: DateRange
   }
 }
 
-export function formatDateShort(value: string) {
-  return dayjs(value).format('MMM DD, YYYY');
-}
-
 export function formatDateTime(value: string) {
   return dayjs(value).format('MMM DD, YYYY hh:mm A');
 }

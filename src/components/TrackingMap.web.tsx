@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 import { useTheme } from '../providers/ThemeProvider';
+import { getReceiverMarkerSvg } from './trackingMapMarkerAssets';
+import { getWebMapStyleDefinition } from './webMapStyle';
 
 interface Coordinate {
   latitude: number;
@@ -16,7 +18,6 @@ interface TrackingMapProps {
   routeColor?: string;
 }
 
-const MAP_STYLE_URL = process.env.EXPO_PUBLIC_MAP_STYLE_URL ?? 'https://demotiles.maplibre.org/style.json';
 const SOURCE_ID = 'tracking-route-source';
 const LAYER_ID = 'tracking-route-layer';
 const FALLBACK_CENTER: Coordinate = { latitude: 14.5995, longitude: 120.9842 };
@@ -28,6 +29,18 @@ function dedupe(points: Coordinate[]) {
     }
     const prev = points[index - 1];
     return point.latitude !== prev.latitude || point.longitude !== prev.longitude;
+  });
+}
+
+function mergeFitPoints(route: Coordinate[], extras: Array<Coordinate | null | undefined>) {
+  const seen = new Set<string>();
+  return [...route, ...extras.filter((point): point is Coordinate => Boolean(point))].filter((point) => {
+    const key = `${point.latitude.toFixed(6)},${point.longitude.toFixed(6)}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
   });
 }
 
@@ -59,6 +72,18 @@ function fitMapToPoints(map: any, module: any, points: Coordinate[], animate = t
     return;
   }
 
+  const center = points.reduce(
+    (acc, point) => ({
+      latitude: acc.latitude + point.latitude,
+      longitude: acc.longitude + point.longitude,
+    }),
+    { latitude: 0, longitude: 0 },
+  );
+  const averageCenter = {
+    latitude: center.latitude / points.length,
+    longitude: center.longitude / points.length,
+  };
+
   if (points.length > 1) {
     const bounds = new module.LngLatBounds(
       [firstPoint.longitude, firstPoint.latitude],
@@ -67,7 +92,43 @@ function fitMapToPoints(map: any, module: any, points: Coordinate[], animate = t
     for (const point of points.slice(1)) {
       bounds.extend([point.longitude, point.latitude]);
     }
-    map.fitBounds(bounds, { padding: 48, duration: animate ? 600 : 0, maxZoom: 15 });
+
+    const container = typeof map.getContainer === 'function' ? map.getContainer() : null;
+    const width = Number(container?.clientWidth ?? 0);
+    const height = Number(container?.clientHeight ?? 0);
+    const minSide = Math.max(0, Math.min(width, height));
+    const lngSpan = Math.abs(bounds.getEast() - bounds.getWest());
+    const latSpan = Math.abs(bounds.getNorth() - bounds.getSouth());
+
+    if (!minSide || minSide < 140 || (lngSpan < 0.00008 && latSpan < 0.00008)) {
+      map.easeTo({
+        center: [averageCenter.longitude, averageCenter.latitude],
+        duration: animate ? 450 : 0,
+        zoom: 14,
+      });
+      return;
+    }
+
+    try {
+      const horizontalPadding = Math.max(14, Math.min(34, Math.floor(width * 0.09)));
+      const verticalPadding = Math.max(16, Math.min(40, Math.floor(height * 0.12)));
+      map.fitBounds(bounds, {
+        padding: {
+          bottom: Math.min(verticalPadding, Math.max(18, Math.floor(height / 4))),
+          left: Math.min(horizontalPadding + 10, Math.max(20, Math.floor(width / 4))),
+          right: Math.min(horizontalPadding, Math.max(18, Math.floor(width / 4))),
+          top: Math.min(verticalPadding + 10, Math.max(22, Math.floor(height / 4))),
+        },
+        duration: animate ? 600 : 0,
+        maxZoom: 14.8,
+      });
+    } catch {
+      map.easeTo({
+        center: [averageCenter.longitude, averageCenter.latitude],
+        duration: animate ? 450 : 0,
+        zoom: 13,
+      });
+    }
     return;
   }
 
@@ -100,15 +161,15 @@ function resolveAssetUri(moduleRef: any) {
 
 function createMarkerElement(kind: 'store' | 'customer' | 'rider') {
   const element = document.createElement('div');
-  element.style.width = '28px';
-  element.style.height = '28px';
+  element.style.width = kind === 'customer' ? '32px' : '28px';
+  element.style.height = kind === 'customer' ? '32px' : '28px';
   element.style.borderRadius = '999px';
   element.style.display = 'flex';
   element.style.alignItems = 'center';
   element.style.justifyContent = 'center';
   element.style.background = kind === 'customer' ? '#E11D48' : '#FFFFFF';
   element.style.border =
-    kind === 'store' ? '1.5px solid #1D4ED8' : kind === 'rider' ? '1.5px solid #F97316' : '1px solid #0F172A';
+    kind === 'store' ? '1.5px solid #1D4ED8' : kind === 'rider' ? '1.5px solid #F97316' : '2px solid #831843';
   element.style.boxShadow = '0 2px 6px rgba(15,23,42,0.35)';
   element.style.fontSize = '13px';
   element.style.color = kind === 'customer' ? '#FFFFFF' : '#0F172A';
@@ -127,43 +188,35 @@ function createMarkerElement(kind: 'store' | 'customer' | 'rider') {
       element.textContent = kind === 'store' ? '🏪' : '🏍️';
     }
   } else {
-    const head = document.createElement('span');
-    head.style.display = 'block';
-    head.style.width = '8px';
-    head.style.height = '8px';
-    head.style.borderRadius = '999px';
-    head.style.backgroundColor = '#FFFFFF';
-    head.style.marginBottom = '1px';
+    const inner = document.createElement('div');
+    inner.style.width = '18px';
+    inner.style.height = '18px';
+    inner.style.borderRadius = '999px';
+    inner.style.backgroundColor = '#FFFFFF';
+    inner.style.display = 'flex';
+    inner.style.alignItems = 'center';
+    inner.style.justifyContent = 'center';
+    inner.innerHTML = getReceiverMarkerSvg('#0F172A');
 
-    const body = document.createElement('span');
-    body.style.display = 'block';
-    body.style.width = '11px';
-    body.style.height = '6px';
-    body.style.borderRadius = '7px 7px 4px 4px';
-    body.style.backgroundColor = '#FFFFFF';
+    const icon = inner.querySelector('svg');
+    if (icon) {
+      icon.setAttribute('width', '12');
+      icon.setAttribute('height', '12');
+      icon.style.display = 'block';
+    }
 
-    element.textContent = '';
-    element.appendChild(head);
-    element.appendChild(body);
+    element.appendChild(inner);
   }
 
   return element;
 }
 
-function buildOsmEmbedUrl(points: Coordinate[], marker?: Coordinate | null) {
-  if (!points.length) {
+function buildOpenStreetMapUrl(marker?: Coordinate | null) {
+  if (!marker) {
     return null;
   }
 
-  const latitudes = points.map((point) => point.latitude);
-  const longitudes = points.map((point) => point.longitude);
-  const minLat = Math.min(...latitudes) - 0.01;
-  const maxLat = Math.max(...latitudes) + 0.01;
-  const minLng = Math.min(...longitudes) - 0.01;
-  const maxLng = Math.max(...longitudes) + 0.01;
-  const fallbackMarker = marker ?? { latitude: (minLat + maxLat) / 2, longitude: (minLng + maxLng) / 2 };
-  const bbox = `${minLng},${minLat},${maxLng},${maxLat}`;
-  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${fallbackMarker.latitude},${fallbackMarker.longitude}`;
+  return `https://www.openstreetmap.org/?mlat=${marker.latitude}&mlon=${marker.longitude}#map=15/${marker.latitude}/${marker.longitude}`;
 }
 
 export function TrackingMap({
@@ -181,6 +234,7 @@ export function TrackingMap({
   const riderMarkerRef = useRef<any>(null);
   const originMarkerRef = useRef<any>(null);
   const destinationMarkerRef = useRef<any>(null);
+  const fitFrameRef = useRef<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoFollow, setAutoFollow] = useState(true);
@@ -204,12 +258,54 @@ export function TrackingMap({
     [safeLiveCoordinates, safeRouteCoordinates],
   );
   const fitPoints = useMemo(
-    () => (route.length ? route : [origin, riderCoordinate, destination].filter((point): point is Coordinate => Boolean(point))),
+    () => mergeFitPoints(route, [origin, riderCoordinate, destination]),
     [destination, origin, riderCoordinate, route],
   );
-  const embedUrl = useMemo(
-    () => buildOsmEmbedUrl(fitPoints, riderCoordinate ?? destination ?? origin ?? null),
+  const externalMapUrl = useMemo(
+    () => buildOpenStreetMapUrl(riderCoordinate ?? destination ?? origin ?? fitPoints[0] ?? null),
     [destination, fitPoints, origin, riderCoordinate],
+  );
+
+  const scheduleFitToPoints = useCallback(
+    (animate = true) => {
+      const map = mapRef.current;
+      const module = maplibreRef.current;
+      if (!map || !module) {
+        return;
+      }
+
+      if (fitFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(fitFrameRef.current);
+        fitFrameRef.current = null;
+      }
+
+      let attempts = 0;
+      const runFit = () => {
+        const container = typeof map.getContainer === 'function' ? map.getContainer() : null;
+        const width = Number(container?.clientWidth ?? 0);
+        const height = Number(container?.clientHeight ?? 0);
+
+        if ((width < 140 || height < 140) && attempts < 10 && typeof requestAnimationFrame === 'function') {
+          attempts += 1;
+          fitFrameRef.current = requestAnimationFrame(runFit);
+          return;
+        }
+
+        fitFrameRef.current = null;
+        map.resize();
+        fitMapToPoints(map, module, fitPoints, animate);
+      };
+
+      if (typeof requestAnimationFrame === 'function') {
+        fitFrameRef.current = requestAnimationFrame(() => {
+          fitFrameRef.current = requestAnimationFrame(runFit);
+        });
+        return;
+      }
+
+      runFit();
+    },
+    [fitPoints],
   );
 
   useEffect(() => {
@@ -228,7 +324,7 @@ export function TrackingMap({
 
         const map = new module.Map({
           container: mapContainerRef.current,
-          style: MAP_STYLE_URL,
+          style: getWebMapStyleDefinition(),
           center: [center.longitude, center.latitude],
           zoom: 12,
           pitchWithRotate: false,
@@ -249,7 +345,7 @@ export function TrackingMap({
         loadTimeout = setTimeout(() => {
           if (!cancelled) {
             setLoading(false);
-            setError('MapLibre timeout. Fallback map is shown.');
+            setError('Map preview timed out.');
           }
         }, 16000);
         map.on('load', () => {
@@ -262,10 +358,15 @@ export function TrackingMap({
             map.resize();
           }
         });
+        map.on('error', () => {
+          if (!cancelled) {
+            setLoading(false);
+          }
+        });
       } catch {
         if (!cancelled) {
           setLoading(false);
-          setError('MapLibre unavailable. Fallback map is shown.');
+          setError('Map preview is unavailable.');
         }
       }
     })();
@@ -279,6 +380,9 @@ export function TrackingMap({
       originMarkerRef.current?.remove?.();
       destinationMarkerRef.current?.remove?.();
       mapRef.current?.remove?.();
+      if (fitFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(fitFrameRef.current);
+      }
       riderMarkerRef.current = null;
       originMarkerRef.current = null;
       destinationMarkerRef.current = null;
@@ -286,6 +390,26 @@ export function TrackingMap({
       hasUserInteractedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const container = mapContainerRef.current;
+    if (!map || !container || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      map.resize();
+      if (autoFollow || !hasUserInteractedRef.current) {
+        scheduleFitToPoints(false);
+      }
+    });
+
+    resizeObserver.observe(container);
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [autoFollow, scheduleFitToPoints]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -351,29 +475,30 @@ export function TrackingMap({
     }
 
     if (autoFollow || !hasUserInteractedRef.current) {
-      fitMapToPoints(map, module, fitPoints, true);
+      scheduleFitToPoints(true);
     }
-  }, [autoFollow, error, fitPoints, loading, route, routeColor, riderCoordinate, destination, origin]);
+  }, [autoFollow, error, fitPoints, loading, route, routeColor, riderCoordinate, destination, origin, scheduleFitToPoints]);
 
   const handleRecenter = useCallback(() => {
     const map = mapRef.current;
-    const module = maplibreRef.current;
-    if (!map || !module) {
+    if (!map) {
       return;
     }
 
     hasUserInteractedRef.current = false;
     setAutoFollow(true);
-    fitMapToPoints(map, module, fitPoints, true);
-  }, [fitPoints]);
+    scheduleFitToPoints(true);
+  }, [scheduleFitToPoints]);
 
   return (
     <div
       style={{
+        aspectRatio: '1 / 1',
         borderRadius: 12,
         border: `1px solid ${theme.colors.border}`,
-        height: 220,
-        marginTop: 10,
+        height: 'auto',
+        margin: '10px auto 0',
+        maxWidth: 420,
         overflow: 'hidden',
         position: 'relative',
         width: '100%',
@@ -381,14 +506,44 @@ export function TrackingMap({
       }}
     >
       {!error ? <div ref={mapContainerRef} style={{ height: '100%', width: '100%' }} /> : null}
-      {error && embedUrl ? (
-        <iframe
-          title="Tracking map fallback"
-          src={embedUrl}
-          style={{ border: 0, height: '100%', width: '100%' }}
-          loading="lazy"
-          referrerPolicy="no-referrer-when-downgrade"
-        />
+      {error ? (
+        <div
+          style={{
+            alignItems: 'center',
+            color: theme.colors.text,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            inset: 0,
+            justifyContent: 'center',
+            padding: 16,
+            position: 'absolute',
+            textAlign: 'center',
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 600 }}>{error}</div>
+          <div style={{ color: theme.colors.textMuted, fontSize: 11, lineHeight: 1.4, maxWidth: 240 }}>
+            External maps are opened only after a click to avoid browser tracking warnings.
+          </div>
+          {externalMapUrl ? (
+            <a
+              href={externalMapUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              style={{
+                background: theme.colors.primary,
+                borderRadius: 999,
+                color: theme.colors.primaryContrast,
+                fontSize: 11,
+                fontWeight: 700,
+                padding: '8px 12px',
+                textDecoration: 'none',
+              }}
+            >
+              Open in OpenStreetMap
+            </a>
+          ) : null}
+        </div>
       ) : null}
       {loading && !error ? (
         <div
@@ -430,22 +585,6 @@ export function TrackingMap({
         >
           Recenter
         </button>
-      ) : null}
-      {error ? (
-        <div
-          style={{
-            background: '#0F172ACC',
-            borderRadius: 8,
-            bottom: 8,
-            color: '#FFFFFF',
-            fontSize: 11,
-            left: 8,
-            padding: '6px 8px',
-            position: 'absolute',
-          }}
-        >
-          {error}
-        </div>
       ) : null}
     </div>
   );

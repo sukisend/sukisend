@@ -416,7 +416,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 22,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   meta: {
     fontSize: 12,
@@ -436,11 +436,11 @@ const styles = StyleSheet.create({
   },
   orderNo: {
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   badge: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   input: {
     borderRadius: 9,
@@ -463,7 +463,7 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: {
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   secondaryBtn: {
     borderRadius: 9,
@@ -484,7 +484,7 @@ const styles = StyleSheet.create({
   },
   routeModalTitle: {
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   routeSummary: {
     borderRadius: 12,
@@ -495,7 +495,7 @@ const styles = StyleSheet.create({
   },
   routeOrderNo: {
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   routeBusyRow: {
     alignItems: 'center',

@@ -4,12 +4,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Location from 'expo-location';
 
+import { BrandAlertModal } from '../../components/BrandAlertModal';
+import { BrandedLoader } from '../../components/BrandedLoader';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { EmptyState } from '../../components/EmptyState';
 import { ModalBackdrop } from '../../components/ModalBackdrop';
 import { RangeChips } from '../../components/RangeChips';
 import { SectionHeader } from '../../components/SectionHeader';
 import { TrackingMap } from '../../components/TrackingMap';
+import { useBrandAlert } from '../../hooks/useBrandAlert';
 import { useTheme } from '../../providers/ThemeProvider';
 import {
   deleteShippingMethod,
@@ -21,7 +24,7 @@ import {
   updateOrderStatus,
 } from '../../services/adminService';
 import { buildAddressQuery, fetchDrivingRoute, geocodeAddress, getStoreCoordinates, haversineDistanceKm } from '../../services/geocodingService';
-import { fetchOrderTrackingEvents } from '../../services/productService';
+import { fetchOrderTrackingEvents } from '../../services/orderService';
 import { DateRange, Order, OrderStatus, OrderTrackingEvent, SalesRangePreset, ShippingMethod } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
 import { formatDateTime } from '../../utils/date';
@@ -141,6 +144,7 @@ interface ShippingForm {
   name: string;
   description: string;
   baseFee: string;
+  ratePerKm: string;
   etaMinDays: string;
   etaMaxDays: string;
 }
@@ -149,12 +153,14 @@ const EMPTY_SHIPPING_FORM: ShippingForm = {
   name: '',
   description: '',
   baseFee: '',
+  ratePerKm: '15',
   etaMinDays: '',
   etaMaxDays: '',
 };
 
 export function AdminTransactionsScreen() {
   const { theme } = useTheme();
+  const { alertConfig, showAlert, hideAlert, confirmAlert } = useBrandAlert();
   const [rangePreset, setRangePreset] = useState<SalesRangePreset>('today');
   const [customRange, setCustomRange] = useState({
     start: dayjs().startOf('month').format('YYYY-MM-DD'),
@@ -546,7 +552,8 @@ export function AdminTransactionsScreen() {
 
   const submitShippingMethod = async () => {
     const baseFee = Number(shippingForm.baseFee);
-    if (!shippingForm.name.trim() || !Number.isFinite(baseFee)) {
+    const ratePerKm = Number(shippingForm.ratePerKm) || 15;
+    if (!shippingForm.name.trim()) {
       return;
     }
 
@@ -555,7 +562,8 @@ export function AdminTransactionsScreen() {
       await saveShippingMethod({
         name: shippingForm.name.trim(),
         description: shippingForm.description.trim() || undefined,
-        baseFee,
+        baseFee: baseFee || 0,
+        ratePerKm,
         etaMinDays: shippingForm.etaMinDays ? Number(shippingForm.etaMinDays) : undefined,
         etaMaxDays: shippingForm.etaMaxDays ? Number(shippingForm.etaMaxDays) : undefined,
         isActive: true,
@@ -700,20 +708,23 @@ export function AdminTransactionsScreen() {
           <Text style={[styles.orderTotal, { color: palette.amountColor }]}>{formatPHP(order.total)}</Text>
         </View>
 
-        <Text style={[styles.meta, { color: theme.colors.textMuted }]} numberOfLines={1}>
+        <Text style={[styles.orderItems, { color: theme.colors.textMuted }]} numberOfLines={1}>
           {order.items.map((item) => `${item.productName} x${item.quantity}`).join(', ')}
         </Text>
 
         {order.deliveryAddress ? (
-          <Text style={[styles.meta, { color: theme.colors.textMuted }]} numberOfLines={1}>
-            Location: {order.deliveryAddress}
-          </Text>
+          <View style={styles.orderLocation}>
+            <Ionicons name="location-outline" size={11} color={theme.colors.textMuted} />
+            <Text style={[styles.meta, { color: theme.colors.textMuted, flex: 1 }]} numberOfLines={1}>
+              {order.deliveryAddress}
+            </Text>
+          </View>
         ) : null}
 
         <TextInput
           value={statusNotes[order.id] ?? ''}
           onChangeText={(value) => setStatusNotes((prev) => ({ ...prev, [order.id]: value }))}
-          placeholder="Progress note (visible to customer)"
+          placeholder="Progress note"
           placeholderTextColor={theme.colors.textMuted}
           style={[
             styles.noteInput,
@@ -725,12 +736,20 @@ export function AdminTransactionsScreen() {
           <View style={styles.actionRow}>
             {actions.map((next) => {
               const actionPalette = getActionPalette(next);
+              const iconName = next === 'approved' ? 'checkmark-circle-outline'
+                : next === 'shipped' ? 'cube-outline'
+                : next === 'out_for_delivery' ? 'bicycle-outline'
+                : next === 'delivered' ? 'checkmark-done-outline'
+                : next === 'cancelled' ? 'close-circle-outline'
+                : next === 'completed' ? 'trophy-outline'
+                : 'arrow-forward-outline';
               return (
                 <Pressable
                   key={next}
                   style={[styles.actionBtn, { borderColor: actionPalette.border, backgroundColor: actionPalette.bg }]}
                   onPress={() => handleStatusUpdate(order, next)}
                 >
+                  <Ionicons name={iconName as any} size={12} color={actionPalette.text} />
                   <Text style={[styles.actionBtnText, { color: actionPalette.text }]}>{STATUS_LABEL[next]}</Text>
                 </Pressable>
               );
@@ -746,27 +765,27 @@ export function AdminTransactionsScreen() {
                 ]}
                 onPress={() => startLiveTracking(order)}
               >
+                <Ionicons
+                  name={liveTrackingOrderId === order.id ? 'radio' : 'location-outline'}
+                  size={12}
+                  color={liveTrackingOrderId === order.id ? theme.colors.primaryContrast : theme.colors.text}
+                />
                 <Text
                   style={[
                     styles.actionBtnText,
                     { color: liveTrackingOrderId === order.id ? theme.colors.primaryContrast : theme.colors.text },
                   ]}
                 >
-                  {liveTrackingOrderId === order.id ? 'Stop Live GPS' : 'Start Live GPS'}
+                  {liveTrackingOrderId === order.id ? 'Stop GPS' : 'Live GPS'}
                 </Text>
               </Pressable>
             ) : null}
             <Pressable
-              style={[
-                styles.actionBtn,
-                {
-                  borderColor: '#0EA5E9',
-                  backgroundColor: '#E0F2FE',
-                },
-              ]}
+              style={[styles.actionBtn, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
               onPress={() => openMapModal(order)}
             >
-              <Text style={[styles.actionBtnText, { color: '#0C4A6E' }]}>View Live Map</Text>
+              <Ionicons name="map-outline" size={12} color={theme.colors.text} />
+              <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Map</Text>
             </Pressable>
           </View>
         ) : null}
@@ -786,18 +805,20 @@ export function AdminTransactionsScreen() {
     return (
       <Pressable
         key={status}
-        style={[styles.statusRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+        style={[styles.statusRow, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
         onPress={() => openStatusPage(status)}
       >
         <View style={styles.statusRowLeft}>
-          <Ionicons name={section.icon} size={17} color={color} />
-          <Text style={[styles.statusName, { color: theme.colors.text }]}>{section.title}</Text>
-          <View style={[styles.statusCountBadge, { backgroundColor: color }]}>
-            <Text style={styles.statusCountText}>{count}</Text>
+          <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: color + '18', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name={section.icon} size={16} color={color} />
           </View>
+          <Text style={[styles.statusName, { color: theme.colors.text }]}>{section.title}</Text>
         </View>
-        <View style={[styles.statusNavBadge, { backgroundColor: theme.colors.surface }]}>
-          <Ionicons name="chevron-forward" size={16} color={theme.colors.textMuted} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <View style={[styles.statusCountBadge, { backgroundColor: color + '20' }]}>
+            <Text style={[styles.statusCountText, { color }]}>{count}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={14} color={theme.colors.textMuted} />
         </View>
       </Pressable>
     );
@@ -830,20 +851,22 @@ export function AdminTransactionsScreen() {
           <View style={[styles.focusCard, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}>
             <View style={styles.focusHeader}>
               <View style={styles.focusTitleWrap}>
-                <Ionicons name={activeSection?.icon ?? 'list-outline'} size={18} color={getSectionColor(activeStatus)} />
+                <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: getSectionColor(activeStatus) + '18', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name={activeSection?.icon ?? 'list-outline'} size={16} color={getSectionColor(activeStatus)} />
+                </View>
                 <Text style={[styles.focusTitle, { color: theme.colors.text }]}>
                   {activeSection?.title ?? STATUS_LABEL[activeStatus]}
                 </Text>
               </View>
-              <View style={[styles.focusCountBadge, { backgroundColor: getSectionColor(activeStatus) }]}>
-                <Text style={styles.focusCountText}>{activeStatusOrders.length}</Text>
+              <View style={[styles.focusCountBadge, { backgroundColor: getSectionColor(activeStatus) + '20' }]}>
+                <Text style={[styles.focusCountText, { color: getSectionColor(activeStatus) }]}>{activeStatusOrders.length}</Text>
               </View>
             </View>
 
             <Text style={[styles.meta, { color: theme.colors.textMuted }]}>Page {statusPage} of {statusPageCount}</Text>
           </View>
 
-          {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading...</Text> : null}
+          {loading ? <BrandedLoader compact label="Loading orders..." /> : null}
           {!loading && activeStatusOrders.length === 0 ? (
             <EmptyState title="No orders in this status" subtitle="Try another status or date range." />
           ) : null}
@@ -890,90 +913,27 @@ export function AdminTransactionsScreen() {
         </>
       ) : (
         <>
-          <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-            <Pressable style={styles.shippingHeaderRow} onPress={() => setShippingExpanded((prev) => !prev)}>
-              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Shipping Methods</Text>
-              <Ionicons name={shippingExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textMuted} />
-            </Pressable>
-
-            {shippingExpanded ? (
-              <>
-                {shippingMethods.map((method) => (
-                  <View key={method.id} style={[styles.shipRow, { borderColor: theme.colors.border }]}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.shipName, { color: theme.colors.text }]}>{method.name}</Text>
-                      <Text style={[styles.meta, { color: theme.colors.textMuted }]}>
-                        {formatPHP(method.baseFee)}
-                        {method.isActive ? '' : ' (Inactive)'}
-                      </Text>
-                    </View>
-
-                    <Pressable
-                      onPress={async () => {
-                        try {
-                          await deleteShippingMethod(method.id);
-                          await loadTransactions();
-                        } catch {
-                          // keep current UI state
-                        }
-                      }}
-                      style={styles.delShipBtn}
-                    >
-                      <Ionicons name="trash-outline" size={14} color={theme.colors.danger ?? '#EF4444'} />
-                    </Pressable>
-                  </View>
-                ))}
-
-                <View style={styles.row}>
-                  <TextInput
-                    value={shippingForm.name}
-                    onChangeText={(value) => setShippingForm((prev) => ({ ...prev, name: value }))}
-                    placeholder="Name"
-                    placeholderTextColor={theme.colors.textMuted}
-                    style={[
-                      styles.input,
-                      styles.flex1,
-                      { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
-                    ]}
-                  />
-                  <TextInput
-                    value={shippingForm.baseFee}
-                    onChangeText={(value) => setShippingForm((prev) => ({ ...prev, baseFee: value }))}
-                    placeholder="Fee"
-                    keyboardType="decimal-pad"
-                    placeholderTextColor={theme.colors.textMuted}
-                    style={[
-                      styles.input,
-                      styles.feeInput,
-                      { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface },
-                    ]}
-                  />
-                  <Pressable
-                    style={[styles.addShipBtn, { backgroundColor: savingShipping ? theme.colors.surfaceAlt : theme.colors.primary }]}
-                    onPress={submitShippingMethod}
-                  >
-                    <Ionicons name="add" size={18} color={theme.colors.primaryContrast} />
-                  </Pressable>
-                </View>
-              </>
-            ) : null}
-          </View>
-
           {refunds.length > 0 ? (
             <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-              <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Refund Queue ({refunds.length})</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="wallet-outline" size={16} color={theme.colors.warning ?? '#F59E0B'} />
+                <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Refund Queue ({refunds.length})</Text>
+              </View>
               {refunds.map((request) => (
-                <View key={request.id} style={[styles.refundRow, { borderColor: theme.colors.border }]}>
-                  <Text style={[styles.meta, { color: theme.colors.text }]}>Order: {request.order_id}</Text>
+                <View key={request.id} style={[styles.refundRow, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={[styles.meta, { color: theme.colors.text, fontWeight: '600' }]}>Order: {request.order_id}</Text>
+                  </View>
                   <Text style={[styles.meta, { color: theme.colors.textMuted }]}>{request.reason}</Text>
                   <View style={styles.actionRow}>
                     <Pressable
-                      style={[styles.actionBtn, { borderColor: theme.colors.border }]}
+                      style={[styles.actionBtn, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
                       onPress={async () => {
                         await resolveRefund(request.id, false);
                         await loadTransactions();
                       }}
                     >
+                      <Ionicons name="close-circle-outline" size={12} color={theme.colors.text} />
                       <Text style={[styles.actionBtnText, { color: theme.colors.text }]}>Reject</Text>
                     </Pressable>
                     <Pressable
@@ -983,6 +943,7 @@ export function AdminTransactionsScreen() {
                         await loadTransactions();
                       }}
                     >
+                      <Ionicons name="checkmark-circle-outline" size={12} color={theme.colors.primaryContrast} />
                       <Text style={[styles.actionBtnText, { color: theme.colors.primaryContrast }]}>Approve</Text>
                     </Pressable>
                   </View>
@@ -991,7 +952,7 @@ export function AdminTransactionsScreen() {
             </View>
           ) : null}
 
-          {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading...</Text> : null}
+          {loading ? <BrandedLoader compact label="Loading transactions..." /> : null}
           {!loading && !transactions.length ? <EmptyState title="No transactions" subtitle="Try a different date range." /> : null}
 
           {STATUS_GROUPS.map((group) => (
@@ -1013,8 +974,8 @@ export function AdminTransactionsScreen() {
           <View style={[styles.mapModalCard, { backgroundColor: theme.colors.card }]}>
             <View style={styles.mapModalHeader}>
               <Text style={[styles.mapModalTitle, { color: theme.colors.text }]}>Live Rider Map</Text>
-              <Pressable style={styles.modalIconCloseButton} onPress={closeMapModal} hitSlop={8}>
-                <Ionicons name="close" size={15} color="#FFFFFF" />
+              <Pressable style={[styles.modalIconCloseButton, { backgroundColor: theme.colors.surface }]} onPress={closeMapModal} hitSlop={8}>
+                <Ionicons name="close" size={15} color={theme.colors.textMuted} />
               </Pressable>
             </View>
 
@@ -1054,20 +1015,22 @@ export function AdminTransactionsScreen() {
           </View>
         </ModalBackdrop>
       </Modal>
+
+      <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { gap: 8, padding: 14 },
-  card: { borderRadius: 14, borderWidth: 1, gap: 6, padding: 12 },
+  content: { gap: 10, padding: 14 },
+  card: { borderRadius: 14, borderWidth: 1, gap: 8, padding: 14 },
   shippingHeaderRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  cardTitle: { fontSize: 15, fontWeight: '800' },
+  cardTitle: { fontSize: 14, fontWeight: '600' },
   row: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   flex1: { flex: 1 },
-  feeInput: { width: 74 },
-  input: { borderRadius: 10, borderWidth: 1, fontSize: 13, paddingHorizontal: 8, paddingVertical: 8 },
+  feeInput: { width: 80 },
+  input: { borderRadius: 10, borderWidth: 1, fontSize: 13, paddingHorizontal: 10, paddingVertical: 9 },
   meta: { fontSize: 11, fontWeight: '500' },
   helper: { fontSize: 13, fontWeight: '500' },
   mapModalCard: {
@@ -1083,15 +1046,12 @@ const styles = StyleSheet.create({
   },
   mapModalTitle: {
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   modalIconCloseButton: {
     alignItems: 'center',
-    backgroundColor: '#DC2626',
-    boxShadow: '0px 4px 12px rgba(220, 38, 38, 0.28)',
-    borderColor: '#FCA5A5',
+    backgroundColor: '#F5F0EB',
     borderRadius: 999,
-    borderWidth: 1,
     height: 30,
     justifyContent: 'center',
     width: 30,
@@ -1106,15 +1066,16 @@ const styles = StyleSheet.create({
   mapHint: {
     marginTop: 6,
   },
-  shipRow: { alignItems: 'center', borderBottomWidth: 0.5, flexDirection: 'row', gap: 8, paddingVertical: 4 },
-  shipName: { fontSize: 13, fontWeight: '700' },
-  delShipBtn: { padding: 4 },
+  shipRow: { alignItems: 'center', borderRadius: 10, flexDirection: 'row', gap: 8, paddingHorizontal: 10, paddingVertical: 10 },
+  shipName: { flex: 1, fontSize: 13, fontWeight: '600' },
+  shipFee: { fontSize: 12, fontWeight: '500' },
+  delShipBtn: { alignItems: 'center', borderRadius: 8, height: 28, justifyContent: 'center', width: 28 },
   addShipBtn: { alignItems: 'center', borderRadius: 10, height: 38, justifyContent: 'center', width: 38 },
-  refundRow: { borderRadius: 8, borderWidth: 0.5, gap: 4, padding: 8 },
-  groupCard: { borderRadius: 14, borderWidth: 1, gap: 8, padding: 10 },
+  refundRow: { borderRadius: 10, borderWidth: 1, gap: 6, padding: 10 },
+  groupCard: { borderRadius: 14, borderWidth: 1, gap: 8, padding: 14 },
   groupHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   groupHeaderLeft: { alignItems: 'center', flexDirection: 'row', gap: 8 },
-  groupTitle: { fontSize: 16, fontWeight: '800' },
+  groupTitle: { fontSize: 15, fontWeight: '600' },
   groupRows: { gap: 8 },
   statusRow: {
     alignItems: 'center',
@@ -1122,20 +1083,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: 10,
-    paddingVertical: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
   },
-  statusRowLeft: { alignItems: 'center', flexDirection: 'row', gap: 8 },
-  statusName: { fontSize: 14, fontWeight: '800' },
+  statusRowLeft: { alignItems: 'center', flexDirection: 'row', gap: 10 },
+  statusName: { fontSize: 14, fontWeight: '600' },
   statusCountBadge: {
     alignItems: 'center',
     borderRadius: 999,
     justifyContent: 'center',
-    minWidth: 20,
+    minWidth: 22,
     paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingVertical: 3,
   },
-  statusCountText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  statusCountText: { fontSize: 11, fontWeight: '600' },
   statusNavBadge: {
     alignItems: 'center',
     borderRadius: 999,
@@ -1153,32 +1114,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
-  backText: { fontSize: 12, fontWeight: '700' },
-  focusCard: { borderRadius: 12, borderWidth: 1, gap: 5, paddingHorizontal: 12, paddingVertical: 10 },
+  backText: { fontSize: 12, fontWeight: '600' },
+  focusCard: { borderRadius: 14, borderWidth: 1, gap: 8, padding: 14 },
   focusHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   focusTitleWrap: { alignItems: 'center', flexDirection: 'row', gap: 8 },
-  focusTitle: { fontSize: 15, fontWeight: '900' },
+  focusTitle: { fontSize: 15, fontWeight: '600' },
   focusCountBadge: {
     alignItems: 'center',
     borderRadius: 999,
     justifyContent: 'center',
-    minWidth: 30,
+    minWidth: 28,
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
-  focusCountText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
-  sectionBody: { gap: 4, paddingLeft: 4, paddingRight: 4 },
-  orderRow: { borderRadius: 10, borderWidth: 1, gap: 3, paddingHorizontal: 10, paddingVertical: 9 },
+  focusCountText: { fontSize: 12, fontWeight: '600' },
+  sectionBody: { gap: 6 },
+  orderRow: { borderRadius: 12, borderWidth: 1, gap: 6, paddingHorizontal: 12, paddingVertical: 10 },
   orderHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  orderNo: { fontSize: 13, fontWeight: '800' },
-  statusBadge: { borderRadius: 999, fontSize: 10, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 3 },
+  orderNo: { fontSize: 13, fontWeight: '600' },
+  statusBadge: { borderRadius: 999, fontSize: 10, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 3 },
   orderMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  orderTotal: { fontSize: 14, fontWeight: '900' },
-  noteInput: { borderRadius: 8, borderWidth: 1, fontSize: 12, marginTop: 6, paddingHorizontal: 8, paddingVertical: 7 },
+  orderTotal: { fontSize: 14, fontWeight: '600' },
+  orderItems: { fontSize: 11, fontWeight: '500', lineHeight: 16 },
+  orderLocation: { alignItems: 'center', flexDirection: 'row', gap: 4, fontSize: 11, fontWeight: '500' },
+  noteInput: { borderRadius: 10, borderWidth: 1, fontSize: 12, marginTop: 4, paddingHorizontal: 10, paddingVertical: 8 },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
-  actionBtn: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 5 },
-  actionBtnText: { fontSize: 11, fontWeight: '700' },
+  actionBtn: { alignItems: 'center', borderRadius: 8, flexDirection: 'row', gap: 4, paddingHorizontal: 10, paddingVertical: 6 },
+  actionBtnText: { fontSize: 11, fontWeight: '600' },
   paginationRow: { flexDirection: 'row', gap: 10, justifyContent: 'center' },
-  pageButton: { borderRadius: 999, borderWidth: 1, minWidth: 110, paddingVertical: 9 },
-  pageButtonText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
+  pageButton: { borderRadius: 999, borderWidth: 1, minWidth: 100, paddingVertical: 8 },
+  pageButtonText: { fontSize: 12, fontWeight: '600', textAlign: 'center' },
 });

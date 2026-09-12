@@ -30,11 +30,33 @@ export function ProductCard({ product, onPress, onAdd, wishlisted, onToggleWishl
   const hasDiscount = displayPrice < product.price;
   const shakeX = useRef(new Animated.Value(0)).current;
   const pulse = useRef(new Animated.Value(1)).current;
+  const titleX = useRef(new Animated.Value(0)).current;
   const useNativeDriver = Platform.OS !== 'web';
+  const shouldScrollTitle = product.name.length > 20;
 
   useEffect(() => {
     setActiveImageIndex(0);
   }, [product.id, imageUrls.length]);
+
+  useEffect(() => {
+    titleX.stopAnimation();
+    titleX.setValue(0);
+    if (!shouldScrollTitle) {
+      return;
+    }
+
+    const distance = Math.min(110, Math.max(32, product.name.length * 4));
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.delay(900),
+        Animated.timing(titleX, { toValue: -distance, duration: 4200, easing: Easing.linear, useNativeDriver }),
+        Animated.delay(700),
+        Animated.timing(titleX, { toValue: 0, duration: 600, easing: Easing.out(Easing.quad), useNativeDriver }),
+      ]),
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [product.id, product.name, shouldScrollTitle, titleX, useNativeDriver]);
 
   useEffect(() => {
     if (imageUrls.length <= 1) {
@@ -75,13 +97,7 @@ export function ProductCard({ product, onPress, onAdd, wishlisted, onToggleWishl
 
   return (
     <Pressable
-      style={[
-        styles.card,
-        {
-          backgroundColor: theme.colors.card,
-          borderColor: theme.colors.border,
-        },
-      ]}
+      style={[styles.card, { backgroundColor: theme.colors.card }, theme.shadow.card]}
       onPress={onPress}
     >
       <View style={styles.imageWrap}>
@@ -89,184 +105,149 @@ export function ProductCard({ product, onPress, onAdd, wishlisted, onToggleWishl
           <Image source={{ uri: imageUrls[activeImageIndex] }} style={styles.image} resizeMode="cover" />
         ) : (
           <View style={[styles.fallbackImage, { backgroundColor: theme.colors.surfaceAlt }]}>
-            <Ionicons name="basket-outline" size={26} color={theme.colors.textMuted} />
+            <Ionicons name="cart-outline" size={22} color={theme.colors.textMuted} />
           </View>
         )}
-
-        {imageUrls.length > 1 ? (
-          <View style={styles.imageDots}>
-            {imageUrls.slice(0, 5).map((uri, index) => (
-              <View
-                key={`${uri}-${index}`}
-                style={[
-                  styles.imageDot,
-                  {
-                    backgroundColor: index === activeImageIndex ? theme.colors.primary : 'rgba(15,23,42,0.35)',
-                  },
-                ]}
-              />
-            ))}
-          </View>
-        ) : null}
-
         {onToggleWishlist ? (
           <Pressable
-            style={[styles.wishlistButton, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}
-            onPress={(event) => {
-              event.stopPropagation();
-              onToggleWishlist();
-            }}
+            style={styles.wishlistBtn}
+            onPress={(e) => { e.stopPropagation(); onToggleWishlist(); }}
           >
             <Ionicons
               name={wishlisted ? 'heart' : 'heart-outline'}
               size={16}
-              color={wishlisted ? theme.colors.primary : theme.colors.textMuted}
+              color={wishlisted ? '#EF4444' : theme.colors.textMuted}
             />
           </Pressable>
         ) : null}
       </View>
 
-      <Text style={[styles.name, { color: theme.colors.text }]} numberOfLines={2}>
-        {product.name}
-      </Text>
-      <Text style={[styles.category, { color: theme.colors.textMuted }]} numberOfLines={1}>
-        {product.categoryName}
-      </Text>
-
-      <Text style={[styles.stockText, { color: outOfStock ? theme.colors.danger ?? '#EF4444' : theme.colors.textMuted }]}>
-        {outOfStock ? 'Out of stock' : `${product.stock} in stock`}
-      </Text>
-
-      <View style={styles.bottomRow}>
-        <View>
-          <Text style={[styles.price, { color: theme.colors.primary }]}>{formatPHP(displayPrice)}</Text>
-          {hasDiscount ? (
-            <Text style={[styles.oldPrice, { color: theme.colors.textMuted }]}>{formatPHP(product.price)}</Text>
-          ) : null}
+      <View style={styles.infoSection}>
+        <View style={styles.nameClip}>
+          <Animated.Text
+            style={[styles.name, { color: theme.colors.text, transform: [{ translateX: titleX }] }]}
+            numberOfLines={1}
+          >
+            {product.name}
+          </Animated.Text>
         </View>
-        <Animated.View style={{ transform: [{ translateX: shakeX }, { scale: pulse }] }}>
-          <Pressable
-          style={[
-            styles.addButton,
-            {
-              backgroundColor: outOfStock ? theme.colors.surfaceAlt : theme.colors.primary,
-            },
-          ]}
-          disabled={outOfStock}
-          onPress={(event) => {
-            event.stopPropagation();
-            handleAdd();
-          }}
-        >
-          <Ionicons
-            name={outOfStock ? 'close-circle-outline' : 'basket-outline'}
-            size={18}
-            color={outOfStock ? theme.colors.textMuted : theme.colors.primaryContrast}
-          />
-          <Text style={[styles.addButtonText, { color: outOfStock ? theme.colors.textMuted : theme.colors.primaryContrast }]}>
-            {outOfStock ? 'Out' : 'Add'}
+
+        <View style={[styles.titleDivider, { backgroundColor: theme.colors.border }]} />
+
+        <Text style={[styles.description, { color: theme.colors.textMuted }]} numberOfLines={2}>
+          {product.description?.trim() || product.categoryName}
+        </Text>
+
+        <View style={styles.stockRow}>
+          <Text style={[styles.stockText, { color: outOfStock ? theme.colors.danger : theme.colors.success }]}>
+            {outOfStock ? 'Out of stock' : `${product.stock} in stock`}
           </Text>
-        </Pressable>
-        </Animated.View>
+        </View>
+
+        <View style={styles.bottomRow}>
+          <Text style={[styles.price, { color: theme.colors.primary }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+            {formatPHP(displayPrice)}
+          </Text>
+          <Animated.View style={{ transform: [{ translateX: shakeX }, { scale: pulse }] }}>
+            <Pressable
+              style={[styles.addBtn, { backgroundColor: outOfStock ? theme.colors.surfaceAlt : theme.colors.primary }]}
+              disabled={outOfStock}
+              onPress={(e) => { e.stopPropagation(); handleAdd(); }}
+            >
+              <Ionicons name={outOfStock ? 'close-circle-outline' : 'cart'} size={13} color={outOfStock ? theme.colors.textMuted : '#fff'} />
+            </Pressable>
+          </Animated.View>
+        </View>
       </View>
     </Pressable>
   );
 }
 
+const CARD_GAP = 6;
+
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 6,
-    minHeight: 240,
+    borderRadius: 8,
     overflow: 'hidden',
-    padding: 12,
-    width: '48.5%',
-  },
-  wishlistButton: {
-    position: 'absolute',
-    right: 6,
-    top: 6,
-    zIndex: 10,
-    alignItems: 'center',
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 26,
-    justifyContent: 'center',
-    padding: 0,
-    width: 26,
   },
   imageWrap: {
-    alignItems: 'center',
-    height: 108,
-    justifyContent: 'center',
+    aspectRatio: 1,
     overflow: 'hidden',
-    position: 'relative',
     width: '100%',
   },
-  imageDots: {
-    bottom: 6,
-    flexDirection: 'row',
-    gap: 4,
-    left: 8,
-    position: 'absolute',
-    zIndex: 5,
-  },
-  imageDot: {
+  wishlistBtn: {
+    alignItems: 'center',
     borderRadius: 999,
-    height: 5,
-    width: 14,
+    height: 26,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: 4,
+    top: 4,
+    width: 26,
+    zIndex: 2,
   },
   image: {
-    borderRadius: 10,
     height: '100%',
     width: '100%',
   },
   fallbackImage: {
     alignItems: 'center',
-    borderRadius: 10,
     height: '100%',
     justifyContent: 'center',
     width: '100%',
   },
-  name: {
-    fontSize: 14,
-    fontWeight: '700',
-    minHeight: 36,
+  infoSection: {
+    paddingHorizontal: 9,
+    paddingBottom: 10,
+    paddingTop: 8,
   },
-  category: {
-    fontSize: 11,
+  nameClip: {
+    height: 18,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  name: {
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 17,
+    minWidth: '140%',
+  },
+  titleDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginTop: 5,
+    opacity: 0.75,
+  },
+  description: {
+    fontSize: 10,
     fontWeight: '500',
+    lineHeight: 13,
+    marginTop: 5,
+    minHeight: 26,
+  },
+  stockRow: {
+    marginTop: 4,
   },
   stockText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
   },
   bottomRow: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 'auto',
+    marginTop: 7,
   },
   price: {
     fontSize: 14,
     fontWeight: '700',
+    flex: 1,
+    minWidth: 0,
   },
-  oldPrice: {
-    fontSize: 11,
-    fontWeight: '600',
-    textDecorationLine: 'line-through',
-  },
-  addButton: {
+  addBtn: {
     alignItems: 'center',
     borderRadius: 999,
-    flexDirection: 'row',
-    gap: 4,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-  addButtonText: {
-    fontSize: 14,
-    fontWeight: '800',
+    height: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
   },
 });

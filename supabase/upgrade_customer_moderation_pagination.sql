@@ -10,6 +10,8 @@ returns table (
   customer_id uuid,
   full_name text,
   email text,
+  avatar_url text,
+  contact_number text,
   created_at timestamptz,
   total_orders bigint,
   pending_orders bigint,
@@ -36,6 +38,8 @@ as $$
       p.id as customer_id,
       p.full_name,
       coalesce(u.email, '') as email,
+      p.avatar_url,
+      p.contact_number,
       p.created_at,
       coalesce(order_stats.total_orders, 0) as total_orders,
       coalesce(order_stats.pending_orders, 0) as pending_orders,
@@ -72,6 +76,7 @@ as $$
     ) active on true
     cross join normalized n
     where p.role = 'customer'
+      and p.full_name <> 'Deleted User'
       and (
         n.search_term is null
         or p.full_name ilike '%' || n.search_term || '%'
@@ -87,6 +92,8 @@ as $$
     f.customer_id,
     f.full_name,
     f.email,
+    f.avatar_url,
+    f.contact_number,
     f.created_at,
     f.total_orders,
     f.pending_orders,

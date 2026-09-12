@@ -4,7 +4,6 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useEffect, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ThemeModeToggle } from '../components/ThemeModeToggle';
 import { useAuth } from '../providers/AuthProvider';
 import { useTheme } from '../providers/ThemeProvider';
 import { fetchCustomerUnreadSellerMessagesCount } from '../services/chatModerationService';
@@ -68,20 +67,21 @@ function CustomerTabs() {
         tabBarInactiveTintColor: theme.colors.textMuted,
         tabBarStyle: {
           backgroundColor: theme.colors.surface,
-          borderTopColor: theme.colors.border,
-          height: 62 + bottomInset,
+          borderTopColor: 'transparent',
+          height: 58 + bottomInset,
           paddingBottom: bottomInset,
-          paddingTop: 8,
+          paddingTop: 6,
         },
         tabBarHideOnKeyboard: true,
         tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '600',
+          fontSize: 10,
+          fontWeight: '500',
+          letterSpacing: -0.2,
         },
         tabBarIcon: ({ color, size }) => {
           const iconMap: Record<keyof CustomerTabsParamList, string> = {
             Shop: 'storefront-outline',
-            Cart: 'bag-outline',
+            Cart: 'cart',
             Orders: 'receipt-outline',
             Account: 'person-outline',
           };
@@ -118,8 +118,8 @@ export function CustomerNavigator() {
       screenOptions={{
         headerStyle: { backgroundColor: theme.colors.surface },
         headerTintColor: theme.colors.text,
-        headerTitleStyle: { fontWeight: '800' },
-        headerRight: () => <ThemeModeToggle compact showLabel={false} />,
+        headerTitleStyle: { fontWeight: '600' },
+        headerShadowVisible: false,
         animation: 'fade',
       }}
     >

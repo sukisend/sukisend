@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ModalBackdrop } from './ModalBackdrop';
+import { useTheme } from '../providers/ThemeProvider';
 
 interface ImagePreviewModalProps {
   visible: boolean;
@@ -12,15 +13,15 @@ interface ImagePreviewModalProps {
 }
 
 export function ImagePreviewModal({ visible, images, initialIndex = 0, onClose }: ImagePreviewModalProps) {
+  const insets = useSafeAreaInsets();
+  const { theme } = useTheme();
   const width = useMemo(() => Dimensions.get('window').width, []);
+  const height = useMemo(() => Dimensions.get('window').height, []);
   const scrollRef = useRef<ScrollView | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
-    if (!visible || !scrollRef.current) {
-      return;
-    }
-
+    if (!visible || !scrollRef.current) return;
     const index = Math.max(0, Math.min(initialIndex, Math.max(0, images.length - 1)));
     setActiveIndex(index);
     requestAnimationFrame(() => {
@@ -33,18 +34,32 @@ export function ImagePreviewModal({ visible, images, initialIndex = 0, onClose }
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <ModalBackdrop overlayOpacity={0.6} intensity={36} paddingHorizontal={0}>
-        <View style={styles.header}>
-          <Text style={styles.headerText}>Product Image Previews</Text>
-          <Pressable onPress={onClose} style={styles.closeButton}>
-            <Ionicons name="close" size={22} color="#F8FAFC" />
-          </Pressable>
-        </View>
+      <View style={styles.overlay}>
+        {/* Blurred background using the current image */}
+        {images[activeIndex] ? (
+          <Image
+            source={{ uri: images[activeIndex] }}
+            style={styles.blurredBg}
+            blurRadius={50}
+            resizeMode="cover"
+          />
+        ) : null}
+        <View style={styles.dimOverlay} />
 
+        {/* Close button */}
+        <Pressable
+          style={[styles.closeButton, { top: insets.top + 10 }]}
+          onPress={onClose}
+          hitSlop={12}
+        >
+          <View style={styles.closeCircle}>
+            <Ionicons name="close" size={20} color="#FFFFFF" />
+          </View>
+        </Pressable>
+
+        {/* Centered image gallery */}
         <ScrollView
-          ref={(instance) => {
-            scrollRef.current = instance;
-          }}
+          ref={(instance) => { scrollRef.current = instance; }}
           style={styles.gallery}
           horizontal
           pagingEnabled
@@ -56,110 +71,121 @@ export function ImagePreviewModal({ visible, images, initialIndex = 0, onClose }
           }}
         >
           {images.map((uri, index) => (
-            <View key={`${uri}-${index}`} style={[styles.imageSlide, { width }]}>
+            <View key={`${uri}-${index}`} style={[styles.imageSlide, { width, height }]}>
               <Image source={{ uri }} style={styles.image} resizeMode="contain" />
             </View>
           ))}
         </ScrollView>
 
-        {images.length > 1 ? (
-          <View style={styles.controlsRow}>
-            <Pressable
-              style={[styles.navButton, !canGoPrev ? styles.navButtonDisabled : null]}
-              disabled={!canGoPrev}
-              onPress={() => {
-                const next = Math.max(0, activeIndex - 1);
-                setActiveIndex(next);
-                scrollRef.current?.scrollTo({ x: next * width, animated: true });
-              }}
-            >
-              <Ionicons name="chevron-back" size={18} color={canGoPrev ? '#F8FAFC' : '#94A3B8'} />
-              <Text style={[styles.navText, { color: canGoPrev ? '#F8FAFC' : '#94A3B8' }]}>Prev</Text>
-            </Pressable>
+        {/* Counter */}
+        <View style={[styles.counterRow, { paddingBottom: insets.bottom + 12 }]}>
+          <Text style={styles.counterText}>
+            {activeIndex + 1} / {images.length}
+          </Text>
+        </View>
 
-            <Text style={styles.counterText}>
-              {activeIndex + 1} / {images.length}
-            </Text>
-
-            <Pressable
-              style={[styles.navButton, !canGoNext ? styles.navButtonDisabled : null]}
-              disabled={!canGoNext}
-              onPress={() => {
-                const next = Math.min(images.length - 1, activeIndex + 1);
-                setActiveIndex(next);
-                scrollRef.current?.scrollTo({ x: next * width, animated: true });
-              }}
-            >
-              <Text style={[styles.navText, { color: canGoNext ? '#F8FAFC' : '#94A3B8' }]}>Next</Text>
-              <Ionicons name="chevron-forward" size={18} color={canGoNext ? '#F8FAFC' : '#94A3B8'} />
-            </Pressable>
-          </View>
-        ) : null}
-      </ModalBackdrop>
+        {/* Navigation arrows (only for multiple images) */}
+        {images.length > 1 && (
+          <>
+            {canGoPrev && (
+              <Pressable
+                style={[styles.navBtn, styles.navBtnLeft, { top: height / 2 - 20 }]}
+                onPress={() => {
+                  const next = Math.max(0, activeIndex - 1);
+                  setActiveIndex(next);
+                  scrollRef.current?.scrollTo({ x: next * width, animated: true });
+                }}
+              >
+                <Ionicons name="chevron-back" size={22} color="#FFF" />
+              </Pressable>
+            )}
+            {canGoNext && (
+              <Pressable
+                style={[styles.navBtn, styles.navBtnRight, { top: height / 2 - 20 }]}
+                onPress={() => {
+                  const next = Math.min(images.length - 1, activeIndex + 1);
+                  setActiveIndex(next);
+                  scrollRef.current?.scrollTo({ x: next * width, animated: true });
+                }}
+              >
+                <Ionicons name="chevron-forward" size={22} color="#FFF" />
+              </Pressable>
+            )}
+          </>
+        )}
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    left: 0,
-    paddingHorizontal: 16,
-    position: 'absolute',
-    right: 0,
-    top: 44,
-    zIndex: 2,
+  overlay: {
+    flex: 1,
   },
-  headerText: {
-    color: '#F8FAFC',
-    fontSize: 15,
-    fontWeight: '800',
+  blurredBg: {
+    ...StyleSheet.absoluteFillObject,
+    height: '100%',
+    width: '100%',
+  },
+  dimOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
   },
   closeButton: {
-    padding: 6,
+    position: 'absolute',
+    right: 16,
+    zIndex: 10,
+  },
+  closeCircle: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 999,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
   },
   gallery: {
     flex: 1,
+    zIndex: 1,
   },
   imageSlide: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 18,
-    paddingVertical: 82,
+    paddingHorizontal: 16,
   },
   image: {
-    height: '100%',
-    width: '100%',
+    borderRadius: 8,
+    height: '70%',
+    maxHeight: 500,
+    width: '85%',
   },
-  controlsRow: {
+  counterRow: {
     alignItems: 'center',
-    backgroundColor: 'rgba(15, 23, 42, 0.72)',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  navButton: {
-    alignItems: 'center',
-    borderRadius: 999,
-    flexDirection: 'row',
-    gap: 4,
-    minWidth: 82,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  navButtonDisabled: {
-    opacity: 0.6,
-  },
-  navText: {
-    fontSize: 12,
-    fontWeight: '700',
+    paddingTop: 8,
+    zIndex: 2,
   },
   counterText: {
-    color: '#E2E8F0',
-    fontSize: 12,
-    fontWeight: '700',
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+    textShadowColor: 'rgba(0,0,0,0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  navBtn: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 999,
+    height: 40,
+    justifyContent: 'center',
+    position: 'absolute',
+    width: 40,
+    zIndex: 5,
+  },
+  navBtnLeft: {
+    left: 10,
+  },
+  navBtnRight: {
+    right: 10,
   },
 });

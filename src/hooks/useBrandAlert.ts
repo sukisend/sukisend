@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Platform } from 'react-native';
+
+import { blurActiveWebElement } from '../utils/webAccessibility';
 
 export type BrandAlertTone = 'info' | 'success' | 'error';
 
@@ -10,6 +11,8 @@ export interface BrandAlertConfig {
   tone: BrandAlertTone;
   actionLabel: string;
   onAction?: (() => void) | null;
+  cancelLabel?: string;
+  onCancel?: (() => void) | null;
 }
 
 interface ShowAlertInput {
@@ -18,6 +21,8 @@ interface ShowAlertInput {
   tone?: BrandAlertTone;
   actionLabel?: string;
   onAction?: () => void;
+  cancelLabel?: string;
+  onCancel?: () => void;
 }
 
 const DEFAULT_STATE: BrandAlertConfig = {
@@ -28,15 +33,6 @@ const DEFAULT_STATE: BrandAlertConfig = {
   actionLabel: 'OK',
   onAction: null,
 };
-
-function blurActiveWebElement() {
-  if (Platform.OS !== 'web' || typeof document === 'undefined') {
-    return;
-  }
-
-  const activeElement = document.activeElement as HTMLElement | null;
-  activeElement?.blur?.();
-}
 
 export function useBrandAlert() {
   const [state, setState] = useState<BrandAlertConfig>(DEFAULT_STATE);
@@ -50,6 +46,8 @@ export function useBrandAlert() {
       tone: input.tone ?? 'info',
       actionLabel: input.actionLabel ?? 'OK',
       onAction: input.onAction ?? null,
+      cancelLabel: input.cancelLabel ?? undefined,
+      onCancel: input.onCancel ?? null,
     });
   };
 

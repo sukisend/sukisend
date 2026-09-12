@@ -4,13 +4,13 @@ import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ThemeModeToggle } from '../components/ThemeModeToggle';
 import { useTheme } from '../providers/ThemeProvider';
 import { AdminAccountScreen } from '../screens/admin/AdminAccountScreen';
 import { AdminDashboardScreen } from '../screens/admin/AdminDashboardScreen';
 import { AdminInboxScreen } from '../screens/admin/AdminInboxScreen';
 import { AdminProductsScreen } from '../screens/admin/AdminProductsScreen';
 import { AdminReportsScreen } from '../screens/admin/AdminReportsScreen';
+import { AdminSettingsScreen } from '../screens/admin/AdminSettingsScreen';
 import { AdminTransactionsScreen } from '../screens/admin/AdminTransactionsScreen';
 import { fetchAdminOrderAlertCount } from '../services/adminService';
 import { fetchAdminUnreadSellerMessagesCount } from '../services/chatModerationService';
@@ -86,21 +86,22 @@ export function AdminNavigator() {
       screenOptions={({ route }) => ({
         headerStyle: { backgroundColor: theme.colors.surface },
         headerTintColor: theme.colors.text,
-        headerTitleStyle: { fontWeight: '800' },
-        headerRight: () => <ThemeModeToggle compact showLabel={false} />,
+        headerTitleStyle: { fontWeight: '600' },
+        headerShadowVisible: false,
         tabBarActiveTintColor: theme.colors.primary,
         tabBarInactiveTintColor: theme.colors.textMuted,
         tabBarStyle: {
           backgroundColor: theme.colors.surface,
-          borderTopColor: theme.colors.border,
-          height: 62 + bottomInset,
+          borderTopColor: 'transparent',
+          height: 58 + bottomInset,
           paddingBottom: bottomInset,
-          paddingTop: 8,
+          paddingTop: 6,
         },
         tabBarHideOnKeyboard: true,
         tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '600',
+          fontSize: 10,
+          fontWeight: '500',
+          letterSpacing: -0.2,
         },
         tabBarIcon: ({ color, size }) => {
           const iconMap: Record<keyof AdminTabsParamList, string> = {
@@ -109,6 +110,7 @@ export function AdminNavigator() {
             Transactions: 'receipt-outline',
             Inbox: 'mail-unread-outline',
             Reports: 'analytics-outline',
+            AdminSettings: 'settings-outline',
             AdminAccount: 'person-circle-outline',
           };
 
@@ -116,12 +118,13 @@ export function AdminNavigator() {
         },
       })}
     >
-      <Tab.Screen name="Dashboard" component={AdminDashboardScreen} />
-      <Tab.Screen name="Products" component={AdminProductsScreen} />
+      <Tab.Screen name="Dashboard" component={AdminDashboardScreen} options={{ headerShown: false }} />
+      <Tab.Screen name="Products" component={AdminProductsScreen} options={{ headerShown: false }} />
       <Tab.Screen
         name="Transactions"
         component={AdminTransactionsScreen}
         options={{
+          headerShown: false,
           tabBarBadge: orderAlertCount > 0 ? orderAlertCount : undefined,
         }}
         listeners={{
@@ -132,11 +135,13 @@ export function AdminNavigator() {
         name="Inbox"
         component={AdminInboxScreen}
         options={{
+          headerShown: false,
           tabBarBadge: inboxUnreadCount > 0 ? inboxUnreadCount : undefined,
         }}
       />
-      <Tab.Screen name="Reports" component={AdminReportsScreen} />
-      <Tab.Screen name="AdminAccount" component={AdminAccountScreen} options={{ title: 'Account' }} />
+      <Tab.Screen name="Reports" component={AdminReportsScreen} options={{ headerShown: false }} />
+      <Tab.Screen name="AdminSettings" component={AdminSettingsScreen} options={{ headerShown: false, tabBarLabel: 'Settings' }} />
+      <Tab.Screen name="AdminAccount" component={AdminAccountScreen} options={{ headerShown: false, tabBarLabel: 'Account' }} />
     </Tab.Navigator>
   );
 }

@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Image, Keyboard, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import { AddressPinMap } from '../../components/AddressPinMap';
+import { AppTextInput } from '../../components/AppTextInput';
 import { BrandAlertModal } from '../../components/BrandAlertModal';
 import { CheckoutProcessingOverlay } from '../../components/CheckoutProcessingOverlay';
 import { EmptyState } from '../../components/EmptyState';
@@ -22,23 +23,19 @@ import {
   geocodeAddress,
   getDeliveryRatePerKm,
   getStoreCoordinates,
-  reverseGeocodePoint,
 } from '../../services/geocodingService';
-import {
-  createCodOrder,
-  fetchCustomerAddresses,
-  fetchShippingMethods,
-  saveCustomerAddress,
-  setDefaultAddress,
-} from '../../services/productService';
+import { createCodOrder } from '../../services/orderService';
+import { fetchCustomerAddresses, saveCustomerAddress, setDefaultAddress } from '../../services/addressService';
 import { fetchActiveCustomerRestriction } from '../../services/chatModerationService';
-import { fetchDeliveryRatePerKmSetting } from '../../services/settingsService';
+import { validateCoupon, applyCoupon as recordCouponUsage } from '../../services/couponService';
+import { fetchDeliveryRatePerKmSetting, fetchFreeShippingThreshold, fetchStoreLocation, fetchDeliveryRadiusMeters, haversineDistanceMeters } from '../../services/settingsService';
 import { useCartStore } from '../../store/cartStore';
-import { CustomerAddress, CustomerRestriction, ShippingMethod } from '../../types/models';
+import { CustomerAddress, CustomerRestriction } from '../../types/models';
 import { formatPHP } from '../../utils/currency';
 import { getProductBasePrice } from '../../utils/pricing';
+import { blurActiveWebElement, buildWebInputId } from '../../utils/webAccessibility';
 
-const DEFAULT_ADDRESS_FORM = {
+const EMPTY_ADDRESS_FORM = {
   countryRegion: 'Philippines',
   firstName: '',
   lastName: '',
@@ -74,33 +71,36 @@ export function CheckoutScreen() {
   const items = useCartStore((state) => state.items);
   const clearCart = useCartStore((state) => state.clearCart);
   const removeItem = useCartStore((state) => state.removeItem);
+  const appliedCoupon = useCartStore((state) => state.appliedCoupon);
+  const applyCouponToCart = useCartStore((state) => state.applyCoupon);
+  const removeCoupon = useCartStore((state) => state.removeCoupon);
   const [placing, setPlacing] = useState(false);
+  const [couponCode, setCouponCode] = useState('');
+  const [couponExpanded, setCouponExpanded] = useState(false);
+  const [validatingCoupon, setValidatingCoupon] = useState(false);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
-  const [shippingMethods, setShippingMethods] = useState<ShippingMethod[]>([]);
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
-  const [selectedShippingMethodId, setSelectedShippingMethodId] = useState<string | null>(null);
   const [customerNote, setCustomerNote] = useState('');
   const [savingAddress, setSavingAddress] = useState(false);
   const [isEstimatingFee, setIsEstimatingFee] = useState(false);
   const [distanceKm, setDistanceKm] = useState<number | null>(null);
   const [distanceDeliveryFee, setDistanceDeliveryFee] = useState<number | null>(null);
   const [feeEstimateFailed, setFeeEstimateFailed] = useState(false);
-  const [autoFillFromPinBusy, setAutoFillFromPinBusy] = useState(false);
-  const [addressForm, setAddressForm] = useState(DEFAULT_ADDRESS_FORM);
-  const [addressFormExpanded, setAddressFormExpanded] = useState(false);
-  const [pinMapVisible, setPinMapVisible] = useState(false);
   const [deliveryRatePerKm, setDeliveryRatePerKm] = useState(getDeliveryRatePerKm());
   const [activeRestriction, setActiveRestriction] = useState<CustomerRestriction | null>(null);
+  const [freeShippingThreshold, setFreeShippingThreshold] = useState(0);
+  const [addressModalVisible, setAddressModalVisible] = useState(false);
+  const [addressForm, setAddressForm] = useState(EMPTY_ADDRESS_FORM);
+  const addressFormScrollRef = useRef<ScrollView | null>(null);
+  const checkoutFieldScope = useId();
   const { provinceOptions, cityOptions, barangayOptions, loadingLocations, isUsingFallback } = useAddressLocations(
     addressForm.province,
     addressForm.city,
   );
+  const getCheckoutInputId = (field: string) => buildWebInputId('checkout', checkoutFieldScope, field);
 
-  const selectedShipping = useMemo(
-    () => shippingMethods.find((item) => item.id === selectedShippingMethodId) ?? null,
-    [shippingMethods, selectedShippingMethodId],
-  );
   const selectedKeys = route.params?.selectedKeys ?? [];
+  const paramFreeShippingUnlocked = route.params?.freeShippingUnlocked ?? false;
   const checkoutItems = useMemo(
     () =>
       selectedKeys.length
@@ -112,6 +112,7 @@ export function CheckoutScreen() {
     () => checkoutItems.reduce((sum, item) => sum + (item.unitPrice ?? getProductBasePrice(item.product)) * item.quantity, 0),
     [checkoutItems],
   );
+  const checkoutFreeShippingUnlocked = paramFreeShippingUnlocked || (freeShippingThreshold > 0 && checkoutSubtotal >= freeShippingThreshold);
   const selectedAddress = useMemo(
     () => addresses.find((item) => item.id === selectedAddressId) ?? null,
     [addresses, selectedAddressId],
@@ -128,19 +129,17 @@ export function CheckoutScreen() {
     const defaultAddress = addresses.find((item) => item.isDefault);
     return [defaultAddress ?? addresses[0]];
   }, [addresses, selectedAddress]);
-  const pinValue = useMemo(
-    () =>
-      Number.isFinite(addressForm.latitude) && Number.isFinite(addressForm.longitude)
-        ? { latitude: Number(addressForm.latitude), longitude: Number(addressForm.longitude) }
-        : null,
-    [addressForm.latitude, addressForm.longitude],
-  );
   const perKmRate = deliveryRatePerKm;
-  const baseDeliveryFee = selectedShipping?.baseFee ?? 0;
-  const deliveryFee = distanceDeliveryFee ?? baseDeliveryFee;
-  const total = checkoutSubtotal + (checkoutItems.length ? deliveryFee : 0);
-
-  const displayedShippingMethods = useMemo(() => shippingMethods, [shippingMethods]);
+  const rawDeliveryFee = distanceDeliveryFee ?? 0;
+  const deliveryFee = checkoutFreeShippingUnlocked ? 0 : rawDeliveryFee;
+  const discount = useMemo(() => {
+    if (!appliedCoupon) return 0;
+    const calculated = appliedCoupon.discountType === 'percent'
+      ? (checkoutSubtotal * appliedCoupon.discountValue) / 100
+      : appliedCoupon.discountValue;
+    return Math.min(calculated, checkoutSubtotal);
+  }, [appliedCoupon, checkoutSubtotal]);
+  const total = Math.max(0, checkoutSubtotal - discount + (checkoutItems.length ? deliveryFee : 0));
   const checkoutCardColor = theme.colors.card;
 
   const loadCheckoutData = async () => {
@@ -149,24 +148,20 @@ export function CheckoutScreen() {
     }
 
     try {
-      const [nextAddresses, nextShipping, nextRate] = await Promise.all([
+      const [nextAddresses, nextRate, nextThreshold] = await Promise.all([
         fetchCustomerAddresses(profile.id),
-        fetchShippingMethods(),
         fetchDeliveryRatePerKmSetting(),
+        fetchFreeShippingThreshold(),
       ]);
       const restriction = await fetchActiveCustomerRestriction(profile.id);
       setAddresses(nextAddresses);
-      setShippingMethods(nextShipping);
       setDeliveryRatePerKm(nextRate);
+      setFreeShippingThreshold(nextThreshold);
       setActiveRestriction(restriction);
       setSelectedAddressId(nextAddresses.find((item) => item.isDefault)?.id ?? nextAddresses[0]?.id ?? null);
-
-      setSelectedShippingMethodId(nextShipping[0]?.id ?? null);
     } catch {
       setAddresses([]);
-      setShippingMethods([]);
       setSelectedAddressId(null);
-      setSelectedShippingMethodId(null);
       setActiveRestriction(null);
     }
   };
@@ -241,6 +236,11 @@ export function CheckoutScreen() {
       mounted = false;
     };
   }, [perKmRate, selectedAddress]);
+
+  const openAddressModal = () => {
+    setAddressForm(EMPTY_ADDRESS_FORM);
+    setAddressModalVisible(true);
+  };
 
   const saveAddress = async () => {
     if (!profile?.id) {
@@ -333,9 +333,8 @@ export function CheckoutScreen() {
         longitude: Number.isFinite(addressForm.longitude) ? Number(addressForm.longitude) : undefined,
       });
       setSelectedAddressId(savedAddress.id);
-      setAddressForm(DEFAULT_ADDRESS_FORM);
-      setAddressFormExpanded(false);
-      setPinMapVisible(false);
+      setAddressForm(EMPTY_ADDRESS_FORM);
+      setAddressModalVisible(false);
       await loadCheckoutData();
       showAlert({
         title: 'Address saved',
@@ -383,11 +382,45 @@ export function CheckoutScreen() {
     );
   }
 
+  const handleApplyCoupon = async () => {
+    if (!couponCode.trim()) {
+      showAlert({ title: 'Empty code', message: 'Please enter a coupon code.', tone: 'info' });
+      return;
+    }
+    if (!profile?.id) {
+      showAlert({ title: 'Sign in required', message: 'Please sign in to use a coupon.', tone: 'info' });
+      return;
+    }
+    setValidatingCoupon(true);
+    try {
+      const result = await validateCoupon(couponCode.trim(), profile.id, checkoutSubtotal);
+      if (result.valid) {
+        applyCouponToCart(result);
+        setCouponCode('');
+        setCouponExpanded(false);
+        Keyboard.dismiss();
+        const discountLabel = result.discountType === 'percent'
+          ? `${result.discountValue}% off`
+          : `${formatPHP(result.discountValue ?? 0)} off`;
+        const amountMsg = (result.discountAmount ?? 0) > 0
+          ? ` You save ${formatPHP(result.discountAmount ?? 0)}.`
+          : '';
+        showAlert({ title: 'Coupon applied!', message: `${discountLabel} on your order.${amountMsg}`, tone: 'success' });
+      } else {
+        showAlert({ title: 'Invalid coupon', message: result.error || 'This coupon is not valid.', tone: 'error' });
+      }
+    } catch {
+      showAlert({ title: 'Error', message: 'Failed to validate coupon. Please try again.', tone: 'error' });
+    } finally {
+      setValidatingCoupon(false);
+    }
+  };
+
   const placeOrder = async () => {
-    if (!profile?.id || !selectedAddressId || !selectedShippingMethodId) {
+    if (!profile?.id || !selectedAddressId) {
       showAlert({
         title: 'Missing checkout details',
-        message: 'Please select your address and shipping option first.',
+        message: 'Please select your shipping address first.',
         tone: 'info',
       });
       return;
@@ -404,14 +437,34 @@ export function CheckoutScreen() {
       return;
     }
 
+    const deliveryCheckAddress = addresses.find((a) => a.id === selectedAddressId);
+    if (deliveryCheckAddress && Number.isFinite(deliveryCheckAddress.latitude) && Number.isFinite(deliveryCheckAddress.longitude)) {
+      try {
+        const [store, radiusMeters] = await Promise.all([fetchStoreLocation(), fetchDeliveryRadiusMeters()]);
+        const distance = haversineDistanceMeters(store.latitude, store.longitude, Number(deliveryCheckAddress.latitude), Number(deliveryCheckAddress.longitude));
+        if (distance > radiusMeters) {
+          const kmAway = (distance / 1000).toFixed(1);
+          showAlert({
+            title: 'Outside delivery area',
+            message: `Your location is approximately ${kmAway} km away, which is beyond our ${((radiusMeters / 1000)).toFixed(0)} km delivery range. Please select a different address.`,
+            tone: 'error',
+          });
+          return;
+        }
+      } catch {
+        // Skip radius check on error
+      }
+    }
+
     const startedAt = Date.now();
     const itemsToCheckout = [...checkoutItems];
+    blurActiveWebElement();
     setPlacing(true);
     try {
       const orderNo = await createCodOrder({
         customerId: profile.id,
         addressId: selectedAddressId,
-        shippingMethodId: selectedShippingMethodId,
+        shippingMethodId: null,
         items: itemsToCheckout,
         customerNote: customerNote.trim() || undefined,
         deliveryFee,
@@ -421,6 +474,10 @@ export function CheckoutScreen() {
       const remainingMs = Math.max(0, CHECKOUT_ANIMATION_MS - elapsedMs);
       if (remainingMs > 0) {
         await sleep(remainingMs);
+      }
+
+      if (appliedCoupon?.couponId) {
+        recordCouponUsage(appliedCoupon.couponId, profile.id, orderNo).catch(() => {});
       }
 
       if (selectedKeys.length) {
@@ -460,7 +517,6 @@ export function CheckoutScreen() {
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
     >
-      <Text style={[styles.title, { color: theme.colors.text }]}>COD Checkout</Text>
       {activeRestriction && ['restricted', 'banned'].includes(activeRestriction.severity) ? (
         <View style={[styles.noticeCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.warning ?? '#F59E0B' }]}>
           <Text style={[styles.noticeTitle, { color: theme.colors.warning ?? '#F59E0B' }]}>Account restriction active</Text>
@@ -471,8 +527,17 @@ export function CheckoutScreen() {
         </View>
       ) : null}
 
+      {/* Shipping Address */}
       <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
-        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Shipping Address</Text>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Shipping Address</Text>
+          <Pressable
+            style={[styles.addIconBtn, { backgroundColor: theme.colors.primary + '15' }]}
+            onPress={openAddressModal}
+          >
+            <Ionicons name="add" size={18} color={theme.colors.primary} />
+          </Pressable>
+        </View>
         {addresses.length ? (
           <View style={styles.optionList}>
             {displayAddresses.map((address) => {
@@ -514,313 +579,37 @@ export function CheckoutScreen() {
             })}
             {addresses.length > 1 ? (
               <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
-                Showing your active delivery address to avoid duplicate checkout entries.
+                Showing your active delivery address.
               </Text>
             ) : null}
           </View>
         ) : (
           <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
-            No shipping address yet. Add one below to continue checkout.
+            No shipping address yet. Tap + to add one.
           </Text>
         )}
       </View>
 
+      {/* Order Note */}
       <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
-        <Pressable
-          style={styles.sectionHeaderRow}
-          onPress={() =>
-            setAddressFormExpanded((prev) => {
-              const next = !prev;
-              if (!next) {
-                setPinMapVisible(false);
-              }
-              return next;
-            })
-          }
-        >
-          <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Add Address</Text>
-          <Ionicons
-            name={addressFormExpanded ? 'chevron-up-outline' : 'chevron-down-outline'}
-            size={18}
-            color={theme.colors.text}
-          />
-        </Pressable>
-        {addressFormExpanded ? (
-          <>
-            <Text style={[styles.label, { color: theme.colors.textMuted }]}>Pin Delivery Location</Text>
-            <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
-              Tap the map or drag the pin for a more accurate delivery location.
-            </Text>
-            <Pressable
-              style={[styles.secondaryButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
-              onPress={() => setPinMapVisible((prev) => !prev)}
-            >
-              <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>
-                {pinMapVisible ? 'Hide Map Pin Selector' : 'Open Map Pin Selector'}
-              </Text>
-            </Pressable>
-            {pinMapVisible ? (
-              <AddressPinMap
-                value={pinValue}
-                onChange={(next) =>
-                  setAddressForm((prev) => ({
-                    ...prev,
-                    latitude: Number(next.latitude.toFixed(7)),
-                    longitude: Number(next.longitude.toFixed(7)),
-                  }))
-                }
-              />
-            ) : (
-              <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
-                If your device is slow, keep map pin selector closed and enter address fields manually.
-              </Text>
-            )}
-            <View style={styles.pinMetaRow}>
-              <Text style={[styles.pinMeta, { color: theme.colors.textMuted }]}>
-                {pinValue
-                  ? `Pinned: ${pinValue.latitude.toFixed(5)}, ${pinValue.longitude.toFixed(5)}`
-                  : 'No pin selected yet'}
-              </Text>
-              <Pressable
-                style={[styles.pinFillButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
-                onPress={async () => {
-                  if (!pinValue) {
-                    showAlert({
-                      title: 'Pin location first',
-                      message: 'Select your location on the map before auto-filling address fields.',
-                      tone: 'info',
-                    });
-                    return;
-                  }
-
-                  try {
-                    setAutoFillFromPinBusy(true);
-                    const reversed = await reverseGeocodePoint(pinValue);
-                    if (!reversed) {
-                      showAlert({
-                        title: 'Address lookup unavailable',
-                        message: 'We could not auto-fill this location. You can still enter fields manually.',
-                        tone: 'info',
-                      });
-                      return;
-                    }
-
-                    setAddressForm((prev) => ({
-                      ...prev,
-                      countryRegion: reversed.countryRegion ?? prev.countryRegion,
-                      province: reversed.province ?? prev.province,
-                      city: reversed.city ?? prev.city,
-                      barangay: reversed.barangay ?? prev.barangay,
-                      postalCode: reversed.postalCode ?? prev.postalCode,
-                      line1: reversed.line1 ?? prev.line1,
-                    }));
-                    showAlert({
-                      title: 'Address fields updated',
-                      message: 'We auto-filled available details from your pinned location.',
-                      tone: 'success',
-                    });
-                  } catch (error) {
-                    showAlert({
-                      title: 'Auto-fill failed',
-                      message: error instanceof Error ? error.message : 'Unable to fetch address details.',
-                      tone: 'error',
-                    });
-                  } finally {
-                    setAutoFillFromPinBusy(false);
-                  }
-                }}
-              >
-                <Text style={[styles.pinFillButtonText, { color: theme.colors.text }]}>Auto-fill from pin</Text>
-              </Pressable>
-            </View>
-            {autoFillFromPinBusy ? (
-              <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
-                Detecting address details from your pinned location...
-              </Text>
-            ) : null}
-
-            <Text style={[styles.label, { color: theme.colors.textMuted }]}>Country / Region</Text>
-            <TextInput
-              value={addressForm.countryRegion}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, countryRegion: value }))}
-              placeholder="Country / Region"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-
-            <View style={styles.row}>
-              <View style={styles.half}>
-                <Text style={[styles.label, { color: theme.colors.textMuted }]}>First Name</Text>
-                <TextInput
-                  value={addressForm.firstName}
-                  onChangeText={(value) => setAddressForm((prev) => ({ ...prev, firstName: value }))}
-                  placeholder="First name"
-                  placeholderTextColor={theme.colors.textMuted}
-                  style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-                />
-              </View>
-              <View style={styles.half}>
-                <Text style={[styles.label, { color: theme.colors.textMuted }]}>Last Name</Text>
-                <TextInput
-                  value={addressForm.lastName}
-                  onChangeText={(value) => setAddressForm((prev) => ({ ...prev, lastName: value }))}
-                  placeholder="Last name"
-                  placeholderTextColor={theme.colors.textMuted}
-                  style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-                />
-              </View>
-            </View>
-            <Text style={[styles.label, { color: theme.colors.textMuted }]}>Phone Number</Text>
-            <TextInput
-              value={addressForm.phone}
-              onChangeText={(value) =>
-                setAddressForm((prev) => ({ ...prev, phone: value.startsWith('+63') ? value : `+63${value.replace(/^[+]?63/, '')}` }))
-              }
-              placeholder="+63"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
-              {loadingLocations
-                ? 'Loading location options...'
-                : isUsingFallback
-                  ? 'Using built-in location list for now.'
-                  : 'Select province, city, and barangay.'}
-            </Text>
-
-            <SearchableDropdown
-              label="Province"
-              placeholder="Select province..."
-              value={addressForm.province}
-              options={provinceOptions}
-              allowCustom
-              onSelect={(value) =>
-                setAddressForm((prev) => ({
-                  ...prev,
-                  province: value,
-                  city: '',
-                  barangay: '',
-                }))
-              }
-            />
-
-            <SearchableDropdown
-              label="City"
-              placeholder="Select city..."
-              value={addressForm.city}
-              options={cityOptions}
-              allowCustom
-              onSelect={(value) =>
-                setAddressForm((prev) => ({
-                  ...prev,
-                  city: value,
-                  barangay: '',
-                }))
-              }
-            />
-
-            <SearchableDropdown
-              label="Barangay"
-              placeholder="Select barangay..."
-              value={addressForm.barangay}
-              options={barangayOptions}
-              allowCustom
-              onSelect={(value) => setAddressForm((prev) => ({ ...prev, barangay: value }))}
-            />
-
-            <Text style={[styles.label, { color: theme.colors.textMuted }]}>Postal Code</Text>
-            <TextInput
-              value={addressForm.postalCode}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, postalCode: value }))}
-              placeholder="Postal code"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <Text style={[styles.label, { color: theme.colors.textMuted }]}>Complete Address</Text>
-            <TextInput
-              value={addressForm.line1}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line1: value }))}
-              placeholder="Complete address"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <Text style={[styles.label, { color: theme.colors.textMuted }]}>Landmark (Optional)</Text>
-            <TextInput
-              value={addressForm.line2}
-              onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line2: value }))}
-              placeholder="Landmark (optional)"
-              placeholderTextColor={theme.colors.textMuted}
-              style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
-            />
-            <Pressable
-              style={[styles.secondaryButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
-              onPress={saveAddress}
-              disabled={savingAddress}
-            >
-              <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>
-                {savingAddress ? 'Saving Address...' : 'Save Address'}
-              </Text>
-            </Pressable>
-          </>
-        ) : (
-          <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Tap to open the delivery address form.</Text>
-        )}
-      </View>
-
-      <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
-        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Shipping Option</Text>
-        <View style={styles.optionList}>
-          {displayedShippingMethods.map((method) => {
-            const active = method.id === selectedShippingMethodId;
-            return (
-              <Pressable
-                key={method.id}
-                style={[
-                  styles.optionCard,
-                  {
-                    borderColor: active ? theme.colors.primary : theme.colors.border,
-                    backgroundColor: active
-                      ? theme.colors.surface
-                      : theme.isDark
-                        ? 'rgba(255,255,255,0.08)'
-                        : '#FFFFFF',
-                  },
-                ]}
-                onPress={() => setSelectedShippingMethodId(method.id)}
-              >
-                <Text style={[styles.optionTitle, { color: theme.colors.text }]}>{method.name}</Text>
-                <Text style={[styles.optionSub, { color: theme.colors.textMuted }]}>
-                  {method.description || 'Shipping service'}
-                </Text>
-                <Text style={[styles.optionSub, { color: theme.colors.textMuted }]}>
-                  Fee: {formatPHP(distanceDeliveryFee ?? method.baseFee)}
-                  {method.etaMinDays !== undefined && method.etaMaxDays !== undefined
-                    ? ` | ETA ${method.etaMinDays}-${method.etaMaxDays} day(s)`
-                    : ''}
-                </Text>
-                <Text style={[styles.optionSub, { color: theme.colors.textMuted }]}>
-                  {isEstimatingFee
-                    ? 'Estimating route distance...'
-                    : feeEstimateFailed
-                      ? `Distance lookup unavailable, using base fee.`
-                      : distanceKm !== null
-                        ? `Distance ${distanceKm.toFixed(2)} km | Rate ${formatPHP(perKmRate)}/km`
-                        : `Rate ${formatPHP(perKmRate)}/km`}
-                </Text>
-              </Pressable>
-            );
-          })}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.label, { color: theme.colors.textMuted }]}>Order note (optional)</Text>
+          <Pressable
+            style={[styles.addIconBtn, { backgroundColor: theme.colors.primary + '15' }]}
+            onPress={() => navigation.navigate('ChatSeller')}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={16} color={theme.colors.primary} />
+          </Pressable>
         </View>
-      </View>
-
-      <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
-        <Text style={[styles.label, { color: theme.colors.textMuted }]}>Order note (optional)</Text>
-        <TextInput
+        <AppTextInput
+          nativeID={getCheckoutInputId('order-note')}
+          webName="checkout-order-note"
           value={customerNote}
           onChangeText={setCustomerNote}
           placeholder="Special instructions for delivery"
           placeholderTextColor={theme.colors.textMuted}
           multiline
+          accessibilityLabel="Order Note"
           style={[
             styles.input,
             styles.multilineInput,
@@ -829,28 +618,203 @@ export function CheckoutScreen() {
         />
       </View>
 
+      {/* Delivery Fee Breakdown */}
       <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
-        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Order Summary</Text>
-        {checkoutItems.map((item) => (
-          <View key={`${item.product.id}-${item.variantId ?? 'default'}`} style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: theme.colors.textMuted }]}>
-              {item.product.name}
-              {item.variantLabel ? ` (${item.variantLabel})` : ''} x{item.quantity}
-            </Text>
-            <Text style={[styles.summaryValue, { color: theme.colors.text }]}>
-              {formatPHP((item.unitPrice ?? getProductBasePrice(item.product)) * item.quantity)}
+        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Delivery Fee</Text>
+        {checkoutFreeShippingUnlocked ? (
+          <View style={styles.feeRow}>
+            <Ionicons name="checkmark-circle" size={14} color={theme.colors.success} />
+            <Text style={[styles.feeText, { color: theme.colors.success, fontWeight: '600' }]}>
+              Free delivery unlocked! Subtotal ({formatPHP(checkoutSubtotal)}) ≥ {formatPHP(freeShippingThreshold)}
             </Text>
           </View>
-        ))}
+        ) : isEstimatingFee ? (
+          <View style={styles.feeRow}>
+            <Ionicons name="location-outline" size={14} color={theme.colors.textMuted} />
+            <Text style={[styles.feeText, { color: theme.colors.textMuted }]}>Calculating distance...</Text>
+          </View>
+        ) : feeEstimateFailed ? (
+          <View style={styles.feeRow}>
+            <Ionicons name="warning-outline" size={14} color={theme.colors.warning} />
+            <Text style={[styles.feeText, { color: theme.colors.textMuted }]}>Unable to calculate distance. Showing base fee.</Text>
+          </View>
+        ) : distanceKm !== null ? (
+          <>
+            <View style={styles.feeRow}>
+              <Ionicons name="navigate-outline" size={14} color={theme.colors.textMuted} />
+              <Text style={[styles.feeText, { color: theme.colors.textMuted }]}>
+                Distance: {distanceKm} km from store
+              </Text>
+            </View>
+            <View style={styles.feeRow}>
+              <Ionicons name="speedometer-outline" size={14} color={theme.colors.textMuted} />
+              <Text style={[styles.feeText, { color: theme.colors.textMuted }]}>
+                Rate: {formatPHP(perKmRate)}/km
+              </Text>
+            </View>
+            <View style={[styles.feeBreakdownDivider, { backgroundColor: theme.colors.border }]} />
+            <View style={styles.feeRow}>
+              <Text style={[styles.feeTotal, { color: theme.colors.text }]}>Delivery Fee</Text>
+              <Text style={[styles.feeTotalValue, { color: theme.colors.primary }]}>{formatPHP(deliveryFee)}</Text>
+            </View>
+          </>
+        ) : (
+          <View style={styles.feeRow}>
+            <Ionicons name="information-circle-outline" size={14} color={theme.colors.textMuted} />
+            <Text style={[styles.feeText, { color: theme.colors.textMuted }]}>
+              Select a shipping address to see delivery fee breakdown.
+            </Text>
+          </View>
+        )}
+      </View>
 
-        <View style={[styles.summaryRow, styles.divider]}>
+      {/* Coupon Section */}
+      {appliedCoupon ? (
+        <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
+          <View style={styles.couponApplied}>
+            <Ionicons name="pricetag" size={14} color={theme.colors.success} />
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={[styles.couponCode, { color: theme.colors.success }]}>{appliedCoupon.code}</Text>
+                <Text style={[styles.discountBadge, { backgroundColor: discount > 0 ? theme.colors.success + '15' : theme.colors.surfaceAlt, color: discount > 0 ? theme.colors.success : theme.colors.textMuted }]}>
+                  {discount > 0 ? 'Applied' : 'Eligible'}
+                </Text>
+              </View>
+              <Text style={[styles.couponDesc, { color: theme.colors.textMuted }]}>
+                {appliedCoupon.description || (
+                  appliedCoupon.discountType === 'percent'
+                    ? `${appliedCoupon.discountValue}% discount on your order`
+                    : `${formatPHP(appliedCoupon.discountValue)} discount on your order`
+                )}
+              </Text>
+              {discount > 0 && (
+                <Text style={[styles.couponDesc, { color: theme.colors.success, marginTop: 2 }]}>
+                  You save {formatPHP(discount)}
+                </Text>
+              )}
+            </View>
+            <Pressable onPress={removeCoupon} hitSlop={8}>
+              <Ionicons name="close-circle" size={18} color={theme.colors.textMuted} />
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+        <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
+          <Pressable
+            style={styles.sectionHeaderRow}
+            onPress={() => setCouponExpanded(!couponExpanded)}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+              <Ionicons name="pricetag-outline" size={15} color={theme.colors.primary} />
+                <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Voucher Code</Text>
+            </View>
+            <Ionicons
+              name={couponExpanded ? 'chevron-up' : 'chevron-forward'}
+              size={16}
+              color={theme.colors.textMuted}
+            />
+          </Pressable>
+          {couponExpanded && (
+            <View style={styles.couponInputRow}>
+              <TextInput
+                style={[styles.couponInput, { color: theme.colors.text, backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+                value={couponCode}
+                onChangeText={(v) => setCouponCode(v)}
+                placeholder="Enter code"
+                placeholderTextColor={theme.colors.textMuted}
+                autoCapitalize="none"
+                returnKeyType="done"
+                onSubmitEditing={handleApplyCoupon}
+              />
+              <Pressable
+                style={[styles.couponApplyBtn, { backgroundColor: validatingCoupon ? theme.colors.surfaceAlt : theme.colors.primary }]}
+                disabled={validatingCoupon}
+                onPress={handleApplyCoupon}
+              >
+                <Text style={[styles.couponApplyText, { color: validatingCoupon ? theme.colors.textMuted : '#fff' }]}>
+                  {validatingCoupon ? '...' : 'Apply'}
+                </Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Order Summary */}
+      <View style={[styles.card, { backgroundColor: checkoutCardColor, borderColor: theme.colors.border }]}>
+        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Order Summary</Text>
+        {checkoutItems.map((item) => {
+          const imageUri = item.product.imageUrl || item.product.images?.[0]?.imageUrl;
+          const unitPrice = item.unitPrice ?? getProductBasePrice(item.product);
+          return (
+            <View key={`${item.product.id}-${item.variantId ?? 'default'}`} style={styles.orderItem}>
+              {imageUri ? (
+                <Image source={{ uri: imageUri }} style={[styles.orderItemImage, { borderColor: theme.colors.border }]} />
+              ) : (
+                <View style={[styles.orderItemImage, styles.orderItemFallback, { backgroundColor: theme.colors.surfaceAlt }]}>
+                  <Text style={{ fontSize: 16 }}>📦</Text>
+                </View>
+              )}
+              <View style={styles.orderItemInfo}>
+                <Text style={[styles.orderItemName, { color: theme.colors.text }]} numberOfLines={1}>
+                  {item.product.name}
+                </Text>
+                {item.variantLabel ? (
+                  <Text style={[styles.orderItemVariant, { color: theme.colors.textMuted }]} numberOfLines={1}>
+                    {item.variantLabel}
+                  </Text>
+                ) : null}
+                <Text style={[styles.orderItemQty, { color: theme.colors.textMuted }]}>
+                  Qty: {item.quantity}
+                </Text>
+              </View>
+              <Text style={[styles.orderItemPrice, { color: theme.colors.text }]} numberOfLines={1}>
+                {formatPHP(unitPrice * item.quantity)}
+              </Text>
+            </View>
+          );
+        })}
+
+        <View style={[styles.summaryDivider, { backgroundColor: theme.colors.border }]} />
+
+        <View style={styles.summaryRow}>
           <Text style={[styles.summaryLabel, { color: theme.colors.textMuted }]}>Subtotal</Text>
           <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{formatPHP(checkoutSubtotal)}</Text>
         </View>
         <View style={styles.summaryRow}>
           <Text style={[styles.summaryLabel, { color: theme.colors.textMuted }]}>Delivery Fee</Text>
-          <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{formatPHP(deliveryFee)}</Text>
+          {checkoutFreeShippingUnlocked ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={[styles.summaryValue, { color: theme.colors.textMuted, textDecorationLine: 'line-through' }]}>
+                {formatPHP(rawDeliveryFee)}
+              </Text>
+              <Text style={[styles.summaryValue, { color: theme.colors.success }]}>FREE</Text>
+            </View>
+          ) : (
+            <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{formatPHP(deliveryFee)}</Text>
+          )}
         </View>
+        {appliedCoupon && (
+          <View style={styles.summaryRow}>
+            <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Ionicons name="pricetag" size={12} color={discount > 0 ? theme.colors.success : theme.colors.textMuted} />
+              <Text style={[styles.summaryLabel, { color: discount > 0 ? theme.colors.success : theme.colors.textMuted, flex: 0, paddingRight: 0 }]}>
+                {appliedCoupon.code}
+              </Text>
+              <Text style={[styles.discountBadge, { backgroundColor: discount > 0 ? theme.colors.success + '15' : theme.colors.surfaceAlt, color: discount > 0 ? theme.colors.success : theme.colors.textMuted }]}>
+                {discount > 0 ? 'Applied' : 'Eligible'}
+              </Text>
+            </View>
+            <Text style={[styles.summaryValue, { color: discount > 0 ? theme.colors.success : theme.colors.textMuted }]}>
+              {discount > 0 ? `-${formatPHP(discount)}` : (
+                appliedCoupon.discountType === 'percent'
+                  ? `${appliedCoupon.discountValue}% off`
+                  : `${formatPHP(appliedCoupon.discountValue)} off`
+              )}
+            </Text>
+          </View>
+        )}
+        <View style={[styles.summaryDivider, { backgroundColor: theme.colors.border }]} />
         <View style={styles.summaryRow}>
           <Text style={[styles.totalLabel, { color: theme.colors.text }]}>Total</Text>
           <Text style={[styles.totalValue, { color: theme.colors.primary }]}>{formatPHP(total)}</Text>
@@ -869,6 +833,195 @@ export function CheckoutScreen() {
 
       <BrandAlertModal config={alertConfig} onClose={hideAlert} onConfirm={confirmAlert} />
       <CheckoutProcessingOverlay visible={placing} />
+
+      {/* Add Address Modal */}
+      <Modal visible={addressModalVisible} animationType="slide" transparent onRequestClose={() => setAddressModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingBottom: insets.bottom + 16 }]}>
+            {/* Modal Header */}
+            <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
+              <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Add Shipping Address</Text>
+              <Pressable onPress={() => setAddressModalVisible(false)} hitSlop={8}>
+                <Ionicons name="close" size={22} color={theme.colors.textMuted} />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              ref={addressFormScrollRef}
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={[styles.label, { color: theme.colors.textMuted }]}>Country / Region</Text>
+              <AppTextInput
+                value={addressForm.countryRegion}
+                onChangeText={(value) => setAddressForm((prev) => ({ ...prev, countryRegion: value }))}
+                placeholder="Country / Region"
+                placeholderTextColor={theme.colors.textMuted}
+                accessibilityLabel="Country / Region"
+                autoComplete="country"
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+              />
+
+              <View style={styles.row}>
+                <View style={styles.half}>
+                  <Text style={[styles.label, { color: theme.colors.textMuted }]}>First Name *</Text>
+                  <AppTextInput
+                    value={addressForm.firstName}
+                    onChangeText={(value) => setAddressForm((prev) => ({ ...prev, firstName: value }))}
+                    placeholder="First name"
+                    placeholderTextColor={theme.colors.textMuted}
+                    accessibilityLabel="First Name"
+                    autoComplete="given-name"
+                    style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                  />
+                </View>
+                <View style={styles.half}>
+                  <Text style={[styles.label, { color: theme.colors.textMuted }]}>Last Name *</Text>
+                  <AppTextInput
+                    value={addressForm.lastName}
+                    onChangeText={(value) => setAddressForm((prev) => ({ ...prev, lastName: value }))}
+                    placeholder="Last name"
+                    placeholderTextColor={theme.colors.textMuted}
+                    accessibilityLabel="Last Name"
+                    autoComplete="family-name"
+                    style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+                  />
+                </View>
+              </View>
+              <Text style={[styles.label, { color: theme.colors.textMuted }]}>Phone Number *</Text>
+              <AppTextInput
+                value={addressForm.phone}
+                onChangeText={(value) =>
+                  setAddressForm((prev) => ({ ...prev, phone: value.startsWith('+63') ? value : `+63${value.replace(/^[+]?63/, '')}` }))
+                }
+                placeholder="+63"
+                placeholderTextColor={theme.colors.textMuted}
+                accessibilityLabel="Phone Number"
+                autoComplete="tel"
+                keyboardType="phone-pad"
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+              />
+              <Text style={[styles.locationHint, { color: theme.colors.textMuted }]}>
+                {loadingLocations
+                  ? 'Loading location options...'
+                  : isUsingFallback
+                    ? 'Using built-in location list for now.'
+                    : 'Select province, city, and barangay.'}
+              </Text>
+
+              <SearchableDropdown
+                label="Province *"
+                placeholder="Select province..."
+                value={addressForm.province}
+                options={provinceOptions}
+                allowCustom
+                onSelect={(value) =>
+                  setAddressForm((prev) => ({
+                    ...prev,
+                    province: value,
+                    city: '',
+                    barangay: '',
+                  }))
+                }
+              />
+
+              <SearchableDropdown
+                label="City *"
+                placeholder="Select city..."
+                value={addressForm.city}
+                options={cityOptions}
+                allowCustom
+                onSelect={(value) =>
+                  setAddressForm((prev) => ({
+                    ...prev,
+                    city: value,
+                    barangay: '',
+                  }))
+                }
+              />
+
+              <SearchableDropdown
+                label="Barangay *"
+                placeholder="Select barangay..."
+                value={addressForm.barangay}
+                options={barangayOptions}
+                allowCustom
+                onSelect={(value) => setAddressForm((prev) => ({ ...prev, barangay: value }))}
+              />
+
+              <Text style={[styles.label, { color: theme.colors.textMuted }]}>Postal Code *</Text>
+              <AppTextInput
+                value={addressForm.postalCode}
+                onChangeText={(value) => setAddressForm((prev) => ({ ...prev, postalCode: value }))}
+                placeholder="Postal code"
+                placeholderTextColor={theme.colors.textMuted}
+                accessibilityLabel="Postal Code"
+                autoComplete="postal-code"
+                keyboardType="number-pad"
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+              />
+
+              <Text style={[styles.label, { color: theme.colors.textMuted }]}>Street / House No. / Building *</Text>
+              <AppTextInput
+                value={addressForm.line1}
+                onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line1: value }))}
+                placeholder="e.g. 123 Rizal St., Blk 5 Lot 2"
+                placeholderTextColor={theme.colors.textMuted}
+                accessibilityLabel="Street Address"
+                autoComplete="address-line1"
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+              />
+
+              <Text style={[styles.label, { color: theme.colors.textMuted }]}>Landmark (Optional)</Text>
+              <AppTextInput
+                value={addressForm.line2}
+                onChangeText={(value) => setAddressForm((prev) => ({ ...prev, line2: value }))}
+                placeholder="Landmark (optional)"
+                placeholderTextColor={theme.colors.textMuted}
+                accessibilityLabel="Landmark"
+                autoComplete="address-line2"
+                style={[styles.input, { borderColor: theme.colors.border, color: theme.colors.text, backgroundColor: theme.colors.surface }]}
+              />
+
+              {/* Map Pin Selector */}
+              <Text style={[styles.label, { color: theme.colors.textMuted, marginTop: 4 }]}>Pin Location on Map (Optional)</Text>
+              <Text style={[styles.locationHint, { color: theme.colors.textMuted, marginBottom: 8 }]}>
+                Move the pin or tap the map to set your exact delivery location.
+              </Text>
+              <AddressPinMap
+                value={
+                  addressForm.latitude != null && addressForm.longitude != null
+                    ? { latitude: addressForm.latitude, longitude: addressForm.longitude }
+                    : null
+                }
+                onChange={(coord) =>
+                  setAddressForm((prev) => ({ ...prev, latitude: coord.latitude, longitude: coord.longitude }))
+                }
+              />
+              {addressForm.latitude != null && addressForm.longitude != null && (
+                <Pressable
+                  style={styles.clearPinBtn}
+                  onPress={() => setAddressForm((prev) => ({ ...prev, latitude: null, longitude: null }))}
+                >
+                  <Ionicons name="close-circle-outline" size={14} color={theme.colors.textMuted} />
+                  <Text style={[styles.clearPinText, { color: theme.colors.textMuted }]}>Clear pin</Text>
+                </Pressable>
+              )}
+
+              <Pressable
+                style={[styles.primaryButton, { backgroundColor: savingAddress ? theme.colors.surfaceAlt : theme.colors.primary, marginTop: 16 }]}
+                disabled={savingAddress}
+                onPress={saveAddress}
+              >
+                <Text style={[styles.primaryButtonText, { color: savingAddress ? theme.colors.textMuted : theme.colors.primaryContrast }]}>
+                  {savingAddress ? 'Saving Address...' : 'Save Address'}
+                </Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -892,16 +1045,12 @@ const styles = StyleSheet.create({
   },
   gateTitle: {
     fontSize: 19,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   gateSub: {
     fontSize: 13,
     lineHeight: 20,
     marginTop: 6,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: '900',
   },
   noticeCard: {
     borderRadius: 12,
@@ -912,7 +1061,7 @@ const styles = StyleSheet.create({
   },
   noticeTitle: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   noticeText: {
     fontSize: 12,
@@ -921,20 +1070,32 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   card: {
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1,
     gap: 10,
     marginTop: 12,
-    padding: 14,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
   sectionTitle: {
     fontSize: 15,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   sectionHeaderRow: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
+  },
+  addIconBtn: {
+    alignItems: 'center',
+    borderRadius: 16,
+    height: 32,
+    justifyContent: 'center',
+    width: 32,
   },
   label: {
     fontSize: 12,
@@ -948,49 +1109,33 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   optionCard: {
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    padding: 10,
+    padding: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
   },
   optionTitle: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   optionSub: {
     fontSize: 12,
     marginTop: 4,
-  },
-  pinMetaRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'space-between',
-  },
-  pinMeta: {
-    flex: 1,
-    fontSize: 11,
-    fontWeight: '500',
-  },
-  pinFillButton: {
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  pinFillButtonText: {
-    fontSize: 12,
-    fontWeight: '700',
   },
   row: {
     flexDirection: 'row',
     gap: 8,
   },
   input: {
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     fontSize: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   half: {
     flex: 1,
@@ -1002,27 +1147,65 @@ const styles = StyleSheet.create({
     marginBottom: -2,
   },
   multilineInput: {
-    minHeight: 84,
+    minHeight: 44,
     textAlignVertical: 'top',
   },
-  secondaryButton: {
+  primaryButton: {
     borderRadius: 999,
-    borderWidth: 1,
-    paddingVertical: 12,
+    marginTop: 16,
+    paddingVertical: 14,
   },
-  secondaryButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
+  primaryButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
     textAlign: 'center',
   },
   summaryRow: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 4,
+    marginTop: 6,
   },
-  divider: {
+  summaryDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
     marginTop: 10,
+    marginBottom: 4,
+  },
+  orderItem: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  orderItemImage: {
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 48,
+    width: 48,
+  },
+  orderItemFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orderItemInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  orderItemName: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  orderItemVariant: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  orderItemQty: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  orderItemPrice: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   summaryLabel: {
     flex: 1,
@@ -1036,20 +1219,107 @@ const styles = StyleSheet.create({
   },
   totalLabel: {
     fontSize: 15,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   totalValue: {
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '600',
   },
-  primaryButton: {
-    borderRadius: 999,
-    marginTop: 16,
+  couponInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  couponInput: {
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  couponApplyBtn: {
+    alignItems: 'center',
+    borderRadius: 8,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  couponApplyText: { fontSize: 12, fontWeight: '700' },
+  couponApplied: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  couponCode: { fontSize: 13, fontWeight: '700' },
+  couponDesc: { fontSize: 11, fontWeight: '500', marginTop: 1 },
+  discountBadge: {
+    borderRadius: 6,
+    fontSize: 10,
+    fontWeight: '600',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  feeRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 2,
+  },
+  feeText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  feeBreakdownDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  feeTotal: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  feeTotalValue: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  clearPinBtn: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 6,
+  },
+  clearPinText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  modalOverlay: {
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  modalContainer: {
+    borderRadius: 18,
+    maxHeight: '85%',
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
     paddingVertical: 14,
   },
-  primaryButtonText: {
-    fontSize: 15,
-    fontWeight: '800',
-    textAlign: 'center',
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  modalScroll: {
+    flexGrow: 0,
+  },
+  modalScrollContent: {
+    padding: 16,
   },
 });

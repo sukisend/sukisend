@@ -1,11 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppVideo } from '../../components/AppVideo';
+import { AppTextInput } from '../../components/AppTextInput';
 import { EmptyState } from '../../components/EmptyState';
 import { ImagePreviewModal } from '../../components/ImagePreviewModal';
+import { TypingPlaceholder } from '../../components/TypingPlaceholder';
 import { useAuth } from '../../providers/AuthProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 import {
@@ -216,11 +218,17 @@ export function ChatSellerScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background, paddingTop: insets.top + 10 }]}>
-      <View style={[styles.headerCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
-        <Text style={[styles.title, { color: theme.colors.text }]}>Chat Seller</Text>
-        <Text style={[styles.subtitle, { color: theme.colors.textMuted }]}>{titleLine}</Text>
+      {/* Compact welcome banner */}
+      <View style={[styles.welcomeBanner, { backgroundColor: theme.colors.surfaceAlt }]}>
+        <View style={styles.welcomeRow}>
+          <Ionicons name="chatbubble-ellipses-outline" size={16} color={theme.colors.textMuted} />
+          <Text style={[styles.welcomeText, { color: theme.colors.textMuted }]} numberOfLines={2}>
+            {titleLine}
+          </Text>
+        </View>
       </View>
 
+      {/* Messages */}
       <ScrollView
         ref={(instance) => {
           messagesScrollRef.current = instance;
@@ -228,17 +236,30 @@ export function ChatSellerScreen() {
         style={styles.messages}
         contentContainerStyle={styles.messagesContent}
       >
-        {loading ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>Loading conversation...</Text> : null}
+        {loading ? (
+          <View style={[styles.loadingChip, { backgroundColor: theme.colors.surfaceAlt }]}>
+            <Text style={[styles.loadingText, { color: theme.colors.textMuted }]}>Loading conversation...</Text>
+          </View>
+        ) : null}
         {!loading && messages.length === 0 ? (
-          <Text style={[styles.helper, { color: theme.colors.textMuted }]}>
-            Start a conversation. We usually reply quickly during store hours.
-          </Text>
+          <View style={[styles.emptyChat, { backgroundColor: theme.colors.surfaceAlt }]}>
+            <Ionicons name="chatbubbles-outline" size={28} color={theme.colors.textMuted} />
+            <Text style={[styles.emptyChatTitle, { color: theme.colors.text }]}>Start a conversation</Text>
+            <Text style={[styles.emptyChatSub, { color: theme.colors.textMuted }]}>
+              We usually reply quickly during store hours.
+            </Text>
+          </View>
         ) : null}
         {messages.map((message) => {
           const own = message.senderRole === 'customer';
           const attachment = message.attachment;
           return (
             <View key={message.id} style={[styles.messageRow, own ? styles.messageRowRight : styles.messageRowLeft]}>
+              {!own ? (
+                <View style={[styles.avatarSmall, { backgroundColor: theme.colors.surfaceAlt }]}>
+                  <Ionicons name="storefront-outline" size={12} color={theme.colors.textMuted} />
+                </View>
+              ) : null}
               <View
                 style={[
                   styles.bubble,
@@ -292,6 +313,7 @@ export function ChatSellerScreen() {
         })}
       </ScrollView>
 
+      {/* Compose */}
       <View
         style={[
           styles.composeWrap,
@@ -308,45 +330,52 @@ export function ChatSellerScreen() {
             onPress={sendAttachment}
             disabled={uploadingMedia || sending}
           >
-            <Ionicons name="attach-outline" size={16} color={theme.colors.text} />
+            <Ionicons name="image-outline" size={16} color={theme.colors.text} />
             <Text style={[styles.mediaButtonText, { color: theme.colors.text }]}>
               {uploadingMedia ? 'Uploading...' : 'Photo/Video'}
             </Text>
           </Pressable>
           <Text style={[styles.attachmentHint, { color: theme.colors.textMuted }]}>Max 10MB</Text>
         </View>
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="Type your message..."
-          placeholderTextColor={theme.colors.textMuted}
-          multiline
-          style={[
-            styles.input,
-            {
-              borderColor: theme.colors.border,
-              color: theme.colors.text,
-              backgroundColor: theme.colors.background,
-            },
-          ]}
-        />
-        {mediaError ? <Text style={[styles.helper, { color: theme.colors.warning ?? '#F59E0B' }]}>{mediaError}</Text> : null}
-        <Pressable
-          style={[styles.sendButton, { backgroundColor: sending ? theme.colors.surfaceAlt : theme.colors.primary }]}
-          onPress={sendMessage}
-          disabled={sending || uploadingMedia || !draft.trim()}
-        >
-          <Text
+        {mediaError ? <Text style={[styles.mediaErrorText, { color: theme.colors.warning ?? '#F59E0B' }]}>{mediaError}</Text> : null}
+        <View style={styles.inputRow}>
+          <View style={styles.inputWrap}>
+            <AppTextInput
+              webName="chat-seller-message"
+              value={draft}
+              onChangeText={setDraft}
+              placeholder=""
+              placeholderTextColor={theme.colors.textMuted}
+              multiline
+              accessibilityLabel="Message"
+              style={[
+                styles.input,
+                {
+                  borderColor: theme.colors.border,
+                  color: theme.colors.text,
+                  backgroundColor: theme.colors.background,
+                },
+              ]}
+            />
+            <TypingPlaceholder visible={!draft} color={theme.colors.textMuted} />
+          </View>
+          <Pressable
             style={[
-              styles.sendButtonText,
+              styles.sendIconButton,
               {
-                color: sending || !draft.trim() ? theme.colors.textMuted : theme.colors.primaryContrast,
+                backgroundColor: sending || !draft.trim() ? theme.colors.surfaceAlt : theme.colors.primary,
               },
             ]}
+            onPress={sendMessage}
+            disabled={sending || uploadingMedia || !draft.trim()}
           >
-            {sending ? 'Sending...' : 'Send'}
-          </Text>
-        </Pressable>
+            <Ionicons
+              name="send"
+              size={16}
+              color={sending || !draft.trim() ? theme.colors.textMuted : '#FFFFFF'}
+            />
+          </Pressable>
+        </View>
       </View>
       <ImagePreviewModal
         visible={previewVisible}
@@ -366,38 +395,65 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 14,
   },
-  headerCard: {
-    borderRadius: 14,
-    borderWidth: 1,
+  welcomeBanner: {
     marginHorizontal: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    marginTop: 6,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
-  title: {
-    fontSize: 18,
-    fontWeight: '900',
+  welcomeRow: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 8,
   },
-  subtitle: {
+  welcomeText: {
+    flex: 1,
     fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 18,
-    marginTop: 4,
+    fontWeight: '500',
+    lineHeight: 17,
   },
   messages: {
     flex: 1,
-    marginTop: 10,
+    marginTop: 8,
     paddingHorizontal: 14,
   },
   messagesContent: {
-    gap: 8,
+    gap: 10,
     paddingBottom: 14,
   },
-  helper: {
-    fontSize: 12,
+  loadingChip: {
+    alignSelf: 'center',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  loadingText: {
+    fontSize: 11,
     fontWeight: '600',
   },
+  emptyChat: {
+    alignItems: 'center',
+    borderRadius: 14,
+    gap: 4,
+    marginTop: 40,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+  },
+  emptyChatTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+  emptyChatSub: {
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
   messageRow: {
+    alignItems: 'flex-end',
     flexDirection: 'row',
+    gap: 6,
   },
   messageRowLeft: {
     justifyContent: 'flex-start',
@@ -405,27 +461,34 @@ const styles = StyleSheet.create({
   messageRowRight: {
     justifyContent: 'flex-end',
   },
+  avatarSmall: {
+    alignItems: 'center',
+    borderRadius: 14,
+    height: 28,
+    justifyContent: 'center',
+    width: 28,
+  },
   bubble: {
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
-    maxWidth: '84%',
+    maxWidth: '78%',
     paddingHorizontal: 10,
     paddingTop: 8,
-    paddingBottom: 6,
+    paddingBottom: 5,
   },
   messageText: {
     fontSize: 13,
-    fontWeight: '600',
-    lineHeight: 19,
+    fontWeight: '500',
+    lineHeight: 18,
   },
   messageMeta: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
-    marginTop: 4,
+    marginTop: 3,
   },
   composeWrap: {
     borderTopWidth: 1,
-    gap: 8,
+    gap: 6,
     paddingHorizontal: 14,
     paddingTop: 10,
   },
@@ -439,48 +502,60 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: 'row',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   mediaButtonText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  attachmentHint: {
     fontSize: 11,
     fontWeight: '600',
   },
+  attachmentHint: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  mediaErrorText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  inputRow: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  inputWrap: {
+    flex: 1,
+    position: 'relative',
+  },
   input: {
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    fontSize: 14,
-    lineHeight: 20,
-    maxHeight: 110,
-    minHeight: 46,
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    maxHeight: 100,
+    minHeight: 40,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
     textAlignVertical: 'top',
   },
-  sendButton: {
-    borderRadius: 999,
-    paddingVertical: 12,
-  },
-  sendButtonText: {
-    fontSize: 14,
-    fontWeight: '800',
-    textAlign: 'center',
+  sendIconButton: {
+    alignItems: 'center',
+    borderRadius: 20,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
   },
   attachmentImage: {
-    borderRadius: 8,
-    height: 170,
-    marginBottom: 6,
-    width: 210,
+    borderRadius: 10,
+    height: 160,
+    marginBottom: 4,
+    width: 200,
   },
   attachmentVideo: {
-    borderRadius: 8,
-    height: 190,
-    marginBottom: 6,
-    width: 220,
+    borderRadius: 10,
+    height: 180,
+    marginBottom: 4,
+    width: 210,
   },
 });

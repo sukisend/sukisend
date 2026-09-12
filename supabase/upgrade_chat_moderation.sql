@@ -389,6 +389,8 @@ returns table (
   customer_id uuid,
   full_name text,
   email text,
+  avatar_url text,
+  contact_number text,
   created_at timestamptz,
   total_orders bigint,
   pending_orders bigint,
@@ -407,6 +409,8 @@ as $$
     p.id as customer_id,
     p.full_name,
     coalesce(u.email, '') as email,
+    p.avatar_url,
+    p.contact_number,
     p.created_at,
     coalesce(order_stats.total_orders, 0) as total_orders,
     coalesce(order_stats.pending_orders, 0) as pending_orders,
@@ -442,6 +446,7 @@ as $$
     limit 1
   ) active on true
   where p.role = 'customer'
+    and p.full_name <> 'Deleted User'
   order by p.created_at desc;
 $$;
 
@@ -451,6 +456,8 @@ returns table (
   customer_id uuid,
   customer_name text,
   customer_email text,
+  customer_avatar_url text,
+  contact_number text,
   last_message_at timestamptz,
   last_message text,
   unread_count bigint,
@@ -466,6 +473,8 @@ as $$
     t.customer_id,
     coalesce(p.full_name, 'Customer') as customer_name,
     coalesce(u.email, '') as customer_email,
+    p.avatar_url as customer_avatar_url,
+    p.contact_number as contact_number,
     t.last_message_at,
     latest.message as last_message,
     coalesce(unread.unread_count, 0) as unread_count,
@@ -583,7 +592,15 @@ begin
     auth.uid()
   );
 
-  delete from auth.users where id = p_customer_id;
+  update public.profiles
+  set
+    full_name = 'Deleted User',
+    avatar_url = null,
+    contact_number = null,
+    updated_at = now()
+  where id = p_customer_id;
+
+  delete from public.seller_chat_threads where customer_id = p_customer_id;
 end;
 $$;
 

@@ -44,6 +44,12 @@ create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text not null default 'Suki User',
   role public.user_role not null default 'customer',
+  username text unique,
+  sitio text default '',
+  barangay text default '',
+  municipality text default '',
+  province text default '',
+  secret_question text default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -310,11 +316,17 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, full_name, role)
+  insert into public.profiles (id, full_name, role, username, sitio, barangay, municipality, province, secret_question)
   values (
     new.id,
     coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1), 'Suki User'),
-    'customer'
+    'customer',
+    coalesce(new.raw_user_meta_data ->> 'username', split_part(new.email, '@', 1), ''),
+    coalesce(new.raw_user_meta_data ->> 'sitio', ''),
+    coalesce(new.raw_user_meta_data ->> 'barangay', ''),
+    coalesce(new.raw_user_meta_data ->> 'municipality', ''),
+    coalesce(new.raw_user_meta_data ->> 'province', ''),
+    coalesce(new.raw_user_meta_data ->> 'secret_question', '')
   )
   on conflict (id) do nothing;
   return new;
@@ -2076,6 +2088,8 @@ returns table (
   customer_id uuid,
   full_name text,
   email text,
+  avatar_url text,
+  contact_number text,
   created_at timestamptz,
   total_orders bigint,
   pending_orders bigint,
@@ -2094,6 +2108,8 @@ as $$
     p.id as customer_id,
     p.full_name,
     coalesce(u.email, '') as email,
+    p.avatar_url,
+    p.contact_number,
     p.created_at,
     coalesce(order_stats.total_orders, 0) as total_orders,
     coalesce(order_stats.pending_orders, 0) as pending_orders,
@@ -2129,6 +2145,7 @@ as $$
     limit 1
   ) active on true
   where p.role = 'customer'
+    and p.full_name <> 'Deleted User'
   order by p.created_at desc;
 $$;
 
@@ -2141,6 +2158,8 @@ returns table (
   customer_id uuid,
   full_name text,
   email text,
+  avatar_url text,
+  contact_number text,
   created_at timestamptz,
   total_orders bigint,
   pending_orders bigint,
@@ -2167,6 +2186,8 @@ as $$
       p.id as customer_id,
       p.full_name,
       coalesce(u.email, '') as email,
+      p.avatar_url,
+      p.contact_number,
       p.created_at,
       coalesce(order_stats.total_orders, 0) as total_orders,
       coalesce(order_stats.pending_orders, 0) as pending_orders,
@@ -2203,6 +2224,7 @@ as $$
     ) active on true
     cross join normalized n
     where p.role = 'customer'
+      and p.full_name <> 'Deleted User'
       and (
         n.search_term is null
         or p.full_name ilike '%' || n.search_term || '%'
@@ -2218,6 +2240,8 @@ as $$
     f.customer_id,
     f.full_name,
     f.email,
+    f.avatar_url,
+    f.contact_number,
     f.created_at,
     f.total_orders,
     f.pending_orders,
@@ -2240,6 +2264,8 @@ returns table (
   customer_id uuid,
   customer_name text,
   customer_email text,
+  customer_avatar_url text,
+  contact_number text,
   last_message_at timestamptz,
   last_message text,
   unread_count bigint,
@@ -2255,6 +2281,8 @@ as $$
     t.customer_id,
     coalesce(p.full_name, 'Customer') as customer_name,
     coalesce(u.email, '') as customer_email,
+    p.avatar_url as customer_avatar_url,
+    p.contact_number as contact_number,
     t.last_message_at,
     latest.message as last_message,
     coalesce(unread.unread_count, 0) as unread_count,
@@ -2291,6 +2319,8 @@ returns table (
   customer_id uuid,
   customer_name text,
   customer_email text,
+  customer_avatar_url text,
+  contact_number text,
   last_message_at timestamptz,
   last_message text,
   unread_count bigint,
@@ -2314,6 +2344,8 @@ as $$
       t.customer_id,
       coalesce(p.full_name, 'Customer') as customer_name,
       coalesce(u.email, '') as customer_email,
+      p.avatar_url as customer_avatar_url,
+      p.contact_number as contact_number,
       t.last_message_at,
       latest.message as last_message,
       coalesce(unread.unread_count, 0)::bigint as unread_count,
@@ -2352,6 +2384,8 @@ as $$
     f.customer_id,
     f.customer_name,
     f.customer_email,
+    f.customer_avatar_url,
+    f.contact_number,
     f.last_message_at,
     f.last_message,
     f.unread_count,
@@ -2456,7 +2490,15 @@ begin
     auth.uid()
   );
 
-  delete from auth.users where id = p_customer_id;
+  update public.profiles
+  set
+    full_name = 'Deleted User',
+    avatar_url = null,
+    contact_number = null,
+    updated_at = now()
+  where id = p_customer_id;
+
+  delete from public.seller_chat_threads where customer_id = p_customer_id;
 end;
 $$;
 
@@ -2584,6 +2626,24 @@ grant execute on function public.admin_list_customers() to authenticated;
 grant execute on function public.admin_list_customers_paginated(integer, integer, text) to authenticated;
 grant execute on function public.admin_list_seller_threads() to authenticated;
 grant execute on function public.admin_list_seller_threads_paginated(integer, integer, text) to authenticated;
+
+-- admin_delete_seller_chat_thread: deletes a thread and all its messages
+create or replace function public.admin_delete_seller_chat_thread(p_thread_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  delete from public.seller_chat_messages
+  where thread_id = p_thread_id;
+
+  delete from public.seller_chat_threads
+  where id = p_thread_id;
+end;
+$$;
+
+grant execute on function public.admin_delete_seller_chat_thread(uuid) to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Rider role + live tracking

@@ -1,8 +1,9 @@
 import { BlurView } from 'expo-blur';
-import { PropsWithChildren, useEffect } from 'react';
+import { PropsWithChildren, useLayoutEffect } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 
 import { useTheme } from '../providers/ThemeProvider';
+import { blurActiveWebElement } from '../utils/webAccessibility';
 
 interface ModalBackdropProps extends PropsWithChildren {
   align?: 'center' | 'flex-start' | 'flex-end';
@@ -21,13 +22,11 @@ export function ModalBackdrop({
   const { theme } = useTheme();
   const useBlur = Platform.OS !== 'android';
 
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') {
-      return;
-    }
-
-    const activeElement = document.activeElement as HTMLElement | null;
-    activeElement?.blur?.();
+  useLayoutEffect(() => {
+    blurActiveWebElement();
+    return () => {
+      blurActiveWebElement();
+    };
   }, []);
 
   return (

@@ -25,4 +25,3 @@ const reportService =
 
 export const exportSalesReportXLSX = reportService.exportSalesReportXLSX;
 export const exportSalesReportPDF = reportService.exportSalesReportPDF;
-export const exportSalesReportCSV = reportService.exportSalesReportXLSX;
