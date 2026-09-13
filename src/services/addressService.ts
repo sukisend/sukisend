@@ -10,10 +10,6 @@ import {
 import { mapRowToAddress } from './mappers';
 
 async function clearDefaultAddresses(customerId: string, keepAddressId?: string) {
-  if (!supabase) {
-    return;
-  }
-
   let query = supabase
     .from('customer_addresses')
     .update({ is_default: false })
@@ -30,10 +26,6 @@ async function clearDefaultAddresses(customerId: string, keepAddressId?: string)
 }
 
 export async function fetchCustomerAddresses(customerId: string): Promise<CustomerAddress[]> {
-  if (!supabase) {
-    return [];
-  }
-
   if (getAddressCoordinatesSupported() !== false) {
     const { data, error } = await supabase
       .from('customer_addresses')
@@ -67,10 +59,6 @@ export async function fetchCustomerAddresses(customerId: string): Promise<Custom
 }
 
 export async function saveCustomerAddress(input: Omit<CustomerAddress, 'id'> & { id?: string }): Promise<CustomerAddress> {
-  if (!supabase) {
-    throw new Error('Address management requires Supabase.');
-  }
-
   const payload = {
     customer_id: input.customerId,
     country_region: input.countryRegion,
@@ -190,10 +178,6 @@ export async function saveCustomerAddress(input: Omit<CustomerAddress, 'id'> & {
 }
 
 export async function deleteCustomerAddress(addressId: string) {
-  if (!supabase) {
-    throw new Error('Address management requires Supabase.');
-  }
-
   const { error } = await supabase.from('customer_addresses').delete().eq('id', addressId);
   if (error) {
     throw new Error(error.message);
@@ -201,10 +185,6 @@ export async function deleteCustomerAddress(addressId: string) {
 }
 
 export async function setDefaultAddress(addressId: string, customerId: string) {
-  if (!supabase) {
-    return;
-  }
-
   await clearDefaultAddresses(customerId, addressId);
 
   const { error } = await supabase

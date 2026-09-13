@@ -10,10 +10,6 @@ export async function validateCoupon(
   customerId: string,
   subtotal: number,
 ): Promise<CouponValidation> {
-  if (!supabase) {
-    return { valid: false, error: 'Service unavailable.' };
-  }
-
   const { data, error } = await supabase.rpc('validate_coupon', {
     p_code: code.trim(),
     p_customer_id: customerId,
@@ -50,8 +46,6 @@ export async function applyCoupon(
   customerId: string,
   orderId: string,
 ): Promise<void> {
-  if (!supabase) return;
-
   await supabase.rpc('apply_coupon', {
     p_coupon_id: couponId,
     p_customer_id: customerId,

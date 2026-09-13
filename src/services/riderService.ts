@@ -1,4 +1,3 @@
-import { mockTransactions } from '../data/mockData';
 import { supabase } from '../lib/supabase';
 import { Order, OrderStatus } from '../types/models';
 
@@ -37,12 +36,6 @@ function mapRpcRowToOrder(row: any): Order {
 }
 
 export async function fetchRiderActiveOrders(): Promise<Order[]> {
-  if (!supabase) {
-    return mockTransactions.filter((order) =>
-      ['approved', 'shipped', 'out_for_delivery'].includes(order.status),
-    );
-  }
-
   const { data, error } = await supabase.rpc('rider_list_active_orders');
   if (error) {
     throw new Error(error.message);
@@ -58,10 +51,6 @@ export async function riderUpdateOrderProgress(input: {
   lat?: number;
   lng?: number;
 }) {
-  if (!supabase) {
-    return;
-  }
-
   const { error } = await supabase.rpc('rider_update_order_progress', {
     p_order_id: input.orderId,
     p_next_status: input.nextStatus ?? null,

@@ -13,7 +13,6 @@ function isMissingSettingsTable(message?: string) {
 }
 
 async function fetchSetting(key: string): Promise<string | null> {
-  if (!supabase) return null;
   const { data, error } = await supabase
     .from('app_settings')
     .select('setting_value')
@@ -24,7 +23,6 @@ async function fetchSetting(key: string): Promise<string | null> {
 }
 
 async function upsertSetting(key: string, value: string) {
-  if (!supabase) return;
   await supabase.from('app_settings').upsert({ setting_key: key, setting_value: value }, { onConflict: 'setting_key' });
 }
 

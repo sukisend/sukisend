@@ -3,10 +3,6 @@ import { WishlistItem } from '../types/models';
 import { mapRowToProduct } from './mappers';
 
 export async function fetchWishlist(customerId: string): Promise<WishlistItem[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('wishlist_items')
     .select(
@@ -55,10 +51,6 @@ export async function fetchWishlist(customerId: string): Promise<WishlistItem[]>
 }
 
 export async function toggleWishlist(customerId: string, productId: string): Promise<boolean> {
-  if (!supabase) {
-    return false;
-  }
-
   const { data: existing, error: checkError } = await supabase
     .from('wishlist_items')
     .select('id')

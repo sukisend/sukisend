@@ -69,10 +69,6 @@ async function getFileSize(uri: string, fallbackSize?: number) {
 }
 
 async function uploadFileUri(uri: string, bucket: string, folder: string, contentType: string, extension: string) {
-  if (!supabase) {
-    throw new Error('Media upload requires Supabase.');
-  }
-
   const response = await fetch(uri);
   const arrayBuffer = await response.arrayBuffer();
   const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;

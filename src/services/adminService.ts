@@ -1,6 +1,5 @@
 import dayjs from 'dayjs';
 
-import { mockProducts, mockTransactions } from '../data/mockData';
 import { supabase } from '../lib/supabase';
 import {
   Category,
@@ -17,9 +16,6 @@ import {
 import { buildDateRange } from '../utils/date';
 import { getCategoryIconColumnSupported, isMissingCategoryIconColumn, setCategoryIconColumnSupported } from './columnDetection';
 import { mapRowToOrder, mapRowToProduct, mapRowToShippingMethod } from './mappers';
-
-const localProducts = [...mockProducts];
-const localOrders = [...mockTransactions];
 
 function isInsideRange(dateValue: string, range: DateRange) {
   const date = dayjs(dateValue).valueOf();
@@ -129,10 +125,6 @@ function buildMetrics(products: Product[], orders: Order[]): {
 }
 
 export async function fetchAdminCategories(): Promise<Category[]> {
-  if (!supabase) {
-    return [];
-  }
-
   if (getCategoryIconColumnSupported() !== false) {
     const { data, error } = await supabase.from('categories').select('id, name, icon, image_url').order('name', { ascending: true });
     if (!error) {
@@ -156,10 +148,6 @@ export async function fetchAdminCategories(): Promise<Category[]> {
 }
 
 export async function fetchShippingMethodsAdmin(): Promise<ShippingMethod[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('shipping_methods')
     .select('id, name, description, base_fee, eta_min_days, eta_max_days, is_active')
@@ -181,10 +169,6 @@ export async function saveShippingMethod(input: {
   etaMaxDays?: number;
   isActive?: boolean;
 }) {
-  if (!supabase) {
-    throw new Error('Shipping methods require Supabase.');
-  }
-
   const payload = {
     name: input.name.trim(),
     description: input.description?.trim() || null,
@@ -210,10 +194,6 @@ export async function saveShippingMethod(input: {
 }
 
 export async function deleteShippingMethod(id: string) {
-  if (!supabase) {
-    throw new Error('Shipping methods require Supabase.');
-  }
-
   const { error } = await supabase.from('shipping_methods').delete().eq('id', id);
   if (error) {
     throw new Error(error.message);
@@ -221,10 +201,6 @@ export async function deleteShippingMethod(id: string) {
 }
 
 export async function saveCategory(input: { name: string; icon?: string; imageUrl?: string }): Promise<string> {
-  if (!supabase) {
-    throw new Error('Categories require Supabase.');
-  }
-
   const payload = { name: input.name.trim(), icon: input.icon?.trim() || null, image_url: input.imageUrl || null };
 
   if (getCategoryIconColumnSupported() !== false) {
@@ -253,10 +229,6 @@ export async function saveCategory(input: { name: string; icon?: string; imageUr
 }
 
 export async function updateCategory(input: { id: string; name: string; icon?: string; imageUrl?: string }) {
-  if (!supabase) {
-    throw new Error('Categories require Supabase.');
-  }
-
   const payload = { name: input.name.trim(), icon: input.icon?.trim() || null, image_url: input.imageUrl || null };
 
   if (getCategoryIconColumnSupported() !== false) {
@@ -280,10 +252,6 @@ export async function updateCategory(input: { id: string; name: string; icon?: s
 }
 
 export async function deleteCategory(id: string) {
-  if (!supabase) {
-    throw new Error('Categories require Supabase.');
-  }
-
   const { error } = await supabase.from('categories').delete().eq('id', id);
   if (error) {
     throw new Error(error.message);
@@ -291,10 +259,6 @@ export async function deleteCategory(id: string) {
 }
 
 export async function deleteProduct(id: string) {
-  if (!supabase) {
-    throw new Error('Products require Supabase.');
-  }
-
   // Delete images first, then the product
   await supabase.from('product_images').delete().eq('product_id', id);
   const { error } = await supabase.from('products').delete().eq('id', id);
@@ -307,16 +271,6 @@ export async function fetchInventoryProducts(input?: { page?: number; pageSize?:
   const page = Math.max(1, Number(input?.page ?? 1));
   const rawPageSize = Number(input?.pageSize ?? 0);
   const pageSize = Number.isFinite(rawPageSize) && rawPageSize > 0 ? Math.floor(rawPageSize) : 0;
-
-  if (!supabase) {
-    const sorted = [...localProducts].sort((a, b) => a.name.localeCompare(b.name));
-    if (!pageSize) {
-      return sorted;
-    }
-
-    const start = (page - 1) * pageSize;
-    return sorted.slice(start, start + pageSize);
-  }
 
   let query = supabase.from('products').select(
       `
@@ -373,10 +327,6 @@ function normalizeVariantKey(name: string, value: string) {
 }
 
 async function syncProductVariants(productId: string, variants: SaveProductVariantInput[]) {
-  if (!supabase) {
-    return;
-  }
-
   const cleaned = variants
     .map((variant) => ({
       id: variant.id,
@@ -462,10 +412,6 @@ async function syncProductVariants(productId: string, variants: SaveProductVaria
 }
 
 async function ensureCategoryId(categoryName: string): Promise<string> {
-  if (!supabase) {
-    return categoryName || 'cat-household';
-  }
-
   const trimmed = categoryName.trim();
   if (!trimmed) {
     throw new Error('Category is required.');
@@ -523,54 +469,6 @@ export async function saveProduct(input: {
   const resolvedStock = hasVariantInventory
     ? activeVariants.reduce((total, variant) => total + Math.max(0, Math.round(Number(variant.stockOverride ?? 0))), 0)
     : input.stock;
-  if (!supabase) {
-    const existingIndex = localProducts.findIndex((item) => item.id === input.id);
-
-    const productId = input.id ?? `mock-${Date.now()}`;
-    const product: Product = {
-      id: productId,
-      name: input.name,
-      description: input.description ?? '',
-      sku: input.sku ?? `SKU-${Date.now().toString().slice(-6)}`,
-      categoryId: input.categoryName.toLowerCase().replace(/\s+/g, '-'),
-      categoryName: input.categoryName,
-      unit: input.unit,
-      cost: input.cost,
-      price: input.price,
-      stock: resolvedStock,
-      minStock: input.minStock,
-      imageUrl: input.imageUrls?.[0],
-      images: (input.imageUrls ?? []).map((imageUrl, index) => ({
-        id: `mock-image-${Date.now()}-${index}`,
-        productId,
-        imageUrl,
-        sortOrder: index,
-      })),
-      variants:
-        input.variants?.map((variant) => ({
-          id: variant.id ?? `mock-var-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          productId,
-          name: variant.name,
-          value: variant.value,
-          priceDelta: Number(variant.priceDelta ?? 0),
-          stockOverride: variant.stockOverride,
-          isActive: variant.isActive ?? true,
-        })) ?? [],
-      onSale: Boolean(input.onSale ?? false),
-      salePrice: input.salePrice,
-      sortPriority: Number(input.sortPriority ?? 0),
-      isActive: input.isActive ?? true,
-    };
-
-    if (existingIndex >= 0) {
-      localProducts[existingIndex] = product;
-    } else {
-      localProducts.unshift(product);
-    }
-
-    return product;
-  }
-
   const categoryId = await ensureCategoryId(input.categoryName);
   const payload = {
     name: input.name,
@@ -681,28 +579,6 @@ export async function restockProduct(
   baseStockDelta: number,
   variantDeltas?: Record<string, number>,
 ): Promise<Product> {
-  if (!supabase) {
-    const idx = localProducts.findIndex((p) => p.id === productId);
-    if (idx < 0) throw new Error('Product not found');
-    const p = localProducts[idx];
-    const nextVariants = p.variants?.map((v) => ({
-      ...v,
-      stockOverride:
-        variantDeltas?.[v.id] != null && v.stockOverride != null
-          ? v.stockOverride + variantDeltas[v.id]
-          : v.stockOverride,
-    }));
-    const variantStocks = (nextVariants ?? [])
-      .filter((variant) => variant.isActive && Number.isFinite(variant.stockOverride))
-      .map((variant) => Number(variant.stockOverride));
-    localProducts[idx] = {
-      ...p,
-      stock: variantStocks.length ? variantStocks.reduce((total, stock) => total + stock, 0) : p.stock + baseStockDelta,
-      variants: nextVariants,
-    };
-    return localProducts[idx];
-  }
-
   const { data: current, error: fetchErr } = await supabase
     .from('products')
     .select('stock, product_variants(id, stock_override, is_active)')
@@ -784,10 +660,6 @@ export async function fetchRecentTransactions(
 ): Promise<Order[]> {
   const range = buildDateRange(rangePreset, customRange);
 
-  if (!supabase) {
-    return localOrders.filter((order) => isInsideRange(order.createdAt, range)).slice(0, limit);
-  }
-
   const { data: ordersData, error: ordersError } = await supabase
     .from('orders')
     .select(
@@ -856,10 +728,6 @@ export async function fetchRecentTransactions(
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus, note?: string, lat?: number, lng?: number) {
-  if (!supabase) {
-    return;
-  }
-
   const { error } = await supabase.rpc('admin_update_order_status', {
     p_order_id: orderId,
     p_next_status: status,
@@ -874,10 +742,6 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus, no
 }
 
 export async function fetchOpenRefundRequests() {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('refund_requests')
     .select('id, order_id, customer_id, status, reason, note, evidence_urls, requested_at, resolved_at, admin_note')
@@ -890,10 +754,6 @@ export async function fetchOpenRefundRequests() {
 }
 
 export async function resolveRefund(refundRequestId: string, approve: boolean, adminNote?: string) {
-  if (!supabase) {
-    return;
-  }
-
   const { error } = await supabase.rpc('admin_resolve_refund', {
     p_refund_request_id: refundRequestId,
     p_approve: approve,
@@ -905,10 +765,6 @@ export async function resolveRefund(refundRequestId: string, approve: boolean, a
 }
 
 export async function fetchAdminOrderAlertCount(sinceIso?: string): Promise<number> {
-  if (!supabase) {
-    return 0;
-  }
-
   let query = supabase
     .from('orders')
     .select('id', { head: true, count: 'exact' })
@@ -969,7 +825,6 @@ export interface Banner {
 }
 
 export async function fetchBanners(): Promise<Banner[]> {
-  if (!supabase) return [];
   const { data, error } = await supabase
     .from('banners')
     .select('*')
@@ -979,7 +834,6 @@ export async function fetchBanners(): Promise<Banner[]> {
 }
 
 export async function fetchActiveBanners(): Promise<Banner[]> {
-  if (!supabase) return [];
   const { data, error } = await supabase
     .from('banners')
     .select('*')
@@ -990,7 +844,6 @@ export async function fetchActiveBanners(): Promise<Banner[]> {
 }
 
 export async function saveBanner(input: { image_url: string; title?: string; subtitle?: string; link_url?: string; sort_order?: number; is_active?: boolean; id?: string }): Promise<Banner> {
-  if (!supabase) throw new Error('Supabase not configured');
   const payload: Record<string, unknown> = {
     image_url: input.image_url,
     title: input.title ?? null,
@@ -1012,15 +865,13 @@ export async function saveBanner(input: { image_url: string; title?: string; sub
 }
 
 export async function deleteBanner(id: string): Promise<void> {
-  if (!supabase) return;
   const { error } = await supabase.from('banners').delete().eq('id', id);
   if (error) throw error;
 }
 
 export async function reorderBanners(orderedIds: string[]): Promise<void> {
-  if (!supabase) return;
   const updates = orderedIds.map((id, index) =>
-    supabase!.from('banners').update({ sort_order: index }).eq('id', id),
+    supabase.from('banners').update({ sort_order: index }).eq('id', id),
   );
   await Promise.all(updates);
 }
@@ -1044,7 +895,6 @@ export interface CouponRecord {
 }
 
 export async function fetchCouponsAdmin(): Promise<CouponRecord[]> {
-  if (!supabase) return [];
   const { data, error } = await supabase
     .from('coupons')
     .select('*')
@@ -1079,8 +929,7 @@ export async function saveCoupon(input: {
   isActive?: boolean;
   startsAt?: string;
   expiresAt?: string;
-}): Promise<CouponRecord> {
-  if (!supabase) throw new Error('Supabase required.');
+  }): Promise<CouponRecord> {
   const payload = {
     code: input.code.trim(),
     description: input.description?.trim() ?? '',
@@ -1145,7 +994,6 @@ export async function saveCoupon(input: {
 }
 
 export async function deleteCoupon(id: string): Promise<void> {
-  if (!supabase) return;
   const { error } = await supabase.from('coupons').delete().eq('id', id);
   if (error) throw error;
 }

@@ -50,6 +50,10 @@ create table if not exists public.profiles (
   municipality text default '',
   province text default '',
   secret_question text default '',
+  secret_answer text default '',
+  contact_number text default '',
+  birthdate date,
+  avatar_url text default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -316,17 +320,25 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, full_name, role, username, sitio, barangay, municipality, province, secret_question)
+  insert into public.profiles (
+    id, full_name, role, username,
+    sitio, barangay, municipality, province,
+    secret_question, secret_answer,
+    contact_number, birthdate
+  )
   values (
     new.id,
-    coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1), 'Suki User'),
-    'customer',
-    coalesce(new.raw_user_meta_data ->> 'username', split_part(new.email, '@', 1), ''),
+    coalesce(new.raw_user_meta_data ->> 'full_name', ''),
+    coalesce(new.raw_user_meta_data ->> 'role', 'customer'),
+    coalesce(new.raw_user_meta_data ->> 'username', ''),
     coalesce(new.raw_user_meta_data ->> 'sitio', ''),
     coalesce(new.raw_user_meta_data ->> 'barangay', ''),
     coalesce(new.raw_user_meta_data ->> 'municipality', ''),
     coalesce(new.raw_user_meta_data ->> 'province', ''),
-    coalesce(new.raw_user_meta_data ->> 'secret_question', '')
+    coalesce(new.raw_user_meta_data ->> 'secret_question', ''),
+    coalesce(new.raw_user_meta_data ->> 'secret_answer', ''),
+    coalesce(new.raw_user_meta_data ->> 'contact_number', ''),
+    nullif(new.raw_user_meta_data ->> 'birthdate', '')::date
   )
   on conflict (id) do nothing;
   return new;

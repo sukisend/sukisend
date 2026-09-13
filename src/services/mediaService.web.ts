@@ -44,10 +44,6 @@ function extensionFromMimeType(mimeType: string | undefined, fallback = 'bin') {
 }
 
 async function uploadBlob(blob: Blob, bucket: string, folder: string, contentType: string, extension: string) {
-  if (!supabase) {
-    throw new Error('Media upload requires Supabase.');
-  }
-
   const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
 
   const { error } = await supabase.storage.from(bucket).upload(fileName, blob, {

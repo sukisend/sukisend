@@ -2,10 +2,6 @@ import { supabase } from '../lib/supabase';
 import { ProductReview } from '../types/models';
 
 export async function fetchProductReviews(productId: string): Promise<ProductReview[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('product_reviews')
     .select(
@@ -52,10 +48,6 @@ export async function submitProductReview(input: {
   comment?: string;
   imageUrls?: string[];
 }) {
-  if (!supabase) {
-    throw new Error('Reviews require Supabase.');
-  }
-
   if ((input.imageUrls?.length ?? 0) > 5) {
     throw new Error('Maximum of 5 review photos is allowed.');
   }
@@ -93,10 +85,6 @@ export async function submitProductReview(input: {
 }
 
 export async function submitRiderReview(input: { orderId: string; customerId: string; rating: number; comment?: string }) {
-  if (!supabase) {
-    throw new Error('Reviews require Supabase.');
-  }
-
   const { error } = await supabase.from('rider_reviews').upsert(
     {
       order_id: input.orderId,

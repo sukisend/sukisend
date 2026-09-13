@@ -344,7 +344,7 @@ export function AccountScreen() {
   };
 
   const saveProfile = async () => {
-    if (!profile?.id || !supabase) return;
+    if (!profile?.id) return;
     if (!profileFullName.trim()) {
       showAlert({ title: 'Missing name', message: 'Full name is required.', tone: 'info' });
       return;
@@ -409,7 +409,7 @@ export function AccountScreen() {
     }
     setChangingPassword(true);
     try {
-      if (!supabase || !profile?.email) return;
+      if (!profile?.email) return;
       const { error: signInError } = await supabase.auth.signInWithPassword({
         email: profile.email,
         password: currentPassword,
@@ -433,7 +433,7 @@ export function AccountScreen() {
   };
 
   const handleAvatarUpload = async () => {
-    if (!profile?.id || !supabase) return;
+    if (!profile?.id) return;
     try {
       setUploadingAvatar(true);
       const url = await pickAndUploadAvatar({ folder: `avatars/${profile.id}` });

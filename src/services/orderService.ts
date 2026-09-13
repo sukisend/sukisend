@@ -3,7 +3,6 @@ import dayjs from 'dayjs';
 
 import { supabase } from '../lib/supabase';
 import { CartItem, Order, OrderTrackingEvent } from '../types/models';
-import { mockTransactions } from '../data/mockData';
 import { mapRowToOrder } from './mappers';
 
 const ORDERS_CACHE_KEY = 'suki_cached_orders';
@@ -23,10 +22,6 @@ export async function createCodOrder(input: {
   customerNote?: string;
   deliveryFee?: number;
 }) {
-  if (!supabase) {
-    return `MOCK-${dayjs().format('HHmmss')}`;
-  }
-
   const payload = input.items.map((item) => ({
     product_id: item.product.id,
     quantity: item.quantity,
@@ -56,10 +51,6 @@ export async function createCodOrder(input: {
 }
 
 export async function fetchCustomerOrders(customerId: string): Promise<Order[]> {
-  if (!supabase) {
-    return mockTransactions.filter((transaction) => transaction.customerId === customerId || customerId === 'customer-demo');
-  }
-
   try {
     const { data, error } = await supabase
       .from('orders')
@@ -142,10 +133,6 @@ export async function fetchCustomerOrders(customerId: string): Promise<Order[]> 
 }
 
 export async function fetchReviewedOrderItemIds(customerId: string): Promise<string[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('product_reviews')
     .select('order_item_id')
@@ -159,10 +146,6 @@ export async function fetchReviewedOrderItemIds(customerId: string): Promise<str
 }
 
 export async function fetchOrderTrackingEvents(orderId: string): Promise<OrderTrackingEvent[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('order_status_history')
     .select('id, order_id, status, title, description, latitude, longitude, event_at')
@@ -186,10 +169,6 @@ export async function fetchOrderTrackingEvents(orderId: string): Promise<OrderTr
 }
 
 export async function cancelCustomerOrder(orderId: string, reason?: string) {
-  if (!supabase) {
-    return;
-  }
-
   const { error } = await supabase.rpc('customer_cancel_order', {
     p_order_id: orderId,
     p_reason: reason ?? null,
@@ -200,10 +179,6 @@ export async function cancelCustomerOrder(orderId: string, reason?: string) {
 }
 
 export async function markOrderCompleted(orderId: string) {
-  if (!supabase) {
-    return;
-  }
-
   const { error } = await supabase.rpc('customer_mark_order_completed', {
     p_order_id: orderId,
   });
@@ -218,10 +193,6 @@ export async function requestOrderRefund(input: {
   note?: string;
   evidenceUrls?: string[];
 }) {
-  if (!supabase) {
-    throw new Error('Refunds require Supabase.');
-  }
-
   const { data, error } = await supabase.rpc('customer_request_refund', {
     p_order_id: input.orderId,
     p_reason: input.reason,

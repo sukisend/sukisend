@@ -1,7 +1,7 @@
 import { Session } from '@supabase/supabase-js';
 import { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from 'react';
 
-import { isSupabaseConfigured, supabase, supabaseUrl } from '../lib/supabase';
+import { supabase, supabaseUrl } from '../lib/supabase';
 import { fetchActiveCustomerRestriction } from '../services/chatModerationService';
 import { AppProfile, UserRole } from '../types/models';
 import { formatAuthError } from '../utils/authErrors';
@@ -49,10 +49,6 @@ function usernameToEmail(username: string): string {
 }
 
 async function resolveProfile(session: Session): Promise<AppProfile | null> {
-  if (!supabase) {
-    return null;
-  }
-
   const user = session.user;
   const email = user.email ?? '';
 
@@ -139,7 +135,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [loading, setLoading] = useState(true);
 
   const refreshProfile = async () => {
-    if (!supabase || !session) {
+    if (!session) {
       setProfile(null);
       return;
     }
@@ -153,11 +149,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
   };
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
-      setLoading(false);
-      return;
-    }
-
     supabase.auth
       .getSession()
       .then(async ({ data, error }) => {
@@ -200,10 +191,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, []);
 
   const signIn = async (email: string, password: string, asAdmin = false) => {
-    if (!supabase) {
-      return 'Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.';
-    }
-
     const normalizedInput = email.trim();
     const normalizedPassword = password;
 
@@ -270,10 +257,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
   };
 
   const resendSignupConfirmation = async (email: string) => {
-    if (!supabase) {
-      return 'Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.';
-    }
-
     const normalizedEmail = email.trim();
     if (!normalizedEmail) {
       return 'Email is required.';
@@ -300,10 +283,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
   };
 
   const signUp = async (name: string, username: string, password: string, metadata?: SignUpMetadata) => {
-    if (!supabase) {
-      return 'Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.';
-    }
-
     try {
       const email = usernameToEmail(username);
       const { error } = await supabase.auth.signUp({
@@ -337,12 +316,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
   };
 
   const signOut = async () => {
-    if (!supabase) {
-      setSession(null);
-      setProfile(null);
-      return;
-    }
-
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);

@@ -154,10 +154,6 @@ function mapCustomerRow(row: any): CustomerModerationUser {
 }
 
 export async function fetchActiveCustomerRestriction(customerId: string): Promise<CustomerRestriction | null> {
-  if (!supabase || !customerId) {
-    return null;
-  }
-
   const { data, error } = await supabase.rpc('customer_active_restriction', {
     p_customer_id: customerId,
   });
@@ -177,10 +173,6 @@ export async function fetchActiveCustomerRestriction(customerId: string): Promis
 }
 
 export async function getOrCreateSellerThread(customerId: string) {
-  if (!supabase) {
-    throw new Error('Chat requires Supabase.');
-  }
-
   const { data, error } = await supabase.rpc('get_or_create_seller_thread', {
     p_customer_id: customerId,
   });
@@ -192,10 +184,6 @@ export async function getOrCreateSellerThread(customerId: string) {
 }
 
 export async function fetchSellerChatMessages(threadId: string): Promise<SellerChatMessage[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('seller_chat_messages')
     .select(
@@ -224,16 +212,6 @@ export async function fetchSellerChatMessagesPage(
   threadId: string,
   input?: PaginationInput,
 ): Promise<PaginatedRows<SellerChatMessage>> {
-  if (!supabase || !threadId) {
-    return {
-      rows: [],
-      page: 1,
-      pageSize: DEFAULT_MESSAGE_PAGE_SIZE,
-      total: 0,
-      hasNextPage: false,
-    };
-  }
-
   const { page, pageSize } = normalizePagination(input, DEFAULT_MESSAGE_PAGE_SIZE);
   const start = (page - 1) * pageSize;
   const end = start + pageSize - 1;
@@ -274,10 +252,6 @@ export async function fetchSellerChatMessagesPage(
 }
 
 export async function sendSellerChatMessage(threadId: string, message: string): Promise<string> {
-  if (!supabase) {
-    throw new Error('Chat requires Supabase.');
-  }
-
   const { data, error } = await supabase.rpc('send_seller_message', {
     p_thread_id: threadId,
     p_message: message,
@@ -298,10 +272,6 @@ export async function sendSellerChatAttachmentMessage(
 }
 
 export async function markSellerChatThreadRead(threadId: string) {
-  if (!supabase) {
-    return;
-  }
-
   const { error } = await supabase.rpc('mark_seller_thread_read', {
     p_thread_id: threadId,
   });
@@ -311,10 +281,6 @@ export async function markSellerChatThreadRead(threadId: string) {
 }
 
 async function fetchAdminSellerThreads(): Promise<SellerChatThread[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase.rpc('admin_list_seller_threads');
   if (error) {
     throw new Error(error.message);
@@ -330,16 +296,6 @@ export async function fetchAdminSellerThreadsPage(
 ): Promise<PaginatedRows<SellerChatThread>> {
   const { page, pageSize } = normalizePagination(input, DEFAULT_PAGE_SIZE);
   const search = input?.search?.trim() ?? '';
-
-  if (!supabase) {
-    return {
-      rows: [],
-      page,
-      pageSize,
-      total: 0,
-      hasNextPage: false,
-    };
-  }
 
   const { data, error } = await supabase.rpc('admin_list_seller_threads_paginated', {
     p_page: page,
@@ -385,10 +341,6 @@ export async function fetchAdminSellerThreadsPage(
 }
 
 export async function fetchAdminUnreadSellerMessagesCount(): Promise<number> {
-  if (!supabase) {
-    return 0;
-  }
-
   const { count, error } = await supabase
     .from('seller_chat_messages')
     .select('id', { head: true, count: 'exact' })
@@ -403,10 +355,6 @@ export async function fetchAdminUnreadSellerMessagesCount(): Promise<number> {
 }
 
 export async function fetchCustomerUnreadSellerMessagesCount(customerId: string): Promise<number> {
-  if (!supabase || !customerId) {
-    return 0;
-  }
-
   const { data: thread, error: threadError } = await supabase
     .from('seller_chat_threads')
     .select('id')
@@ -436,10 +384,6 @@ export async function fetchCustomerUnreadSellerMessagesCount(customerId: string)
 }
 
 async function fetchAdminCustomers(): Promise<CustomerModerationUser[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase.rpc('admin_list_customers');
   if (error) {
     throw new Error(error.message);
@@ -455,16 +399,6 @@ export async function fetchAdminCustomersPage(
 ): Promise<PaginatedRows<CustomerModerationUser>> {
   const { page, pageSize } = normalizePagination(input, DEFAULT_PAGE_SIZE);
   const search = input?.search?.trim() ?? '';
-
-  if (!supabase) {
-    return {
-      rows: [],
-      page,
-      pageSize,
-      total: 0,
-      hasNextPage: false,
-    };
-  }
 
   const { data, error } = await supabase.rpc('admin_list_customers_paginated', {
     p_page: page,
@@ -515,10 +449,6 @@ export async function adminSetCustomerRestriction(input: {
   durationHours?: number;
   until?: string;
 }) {
-  if (!supabase) {
-    throw new Error('Moderation requires Supabase.');
-  }
-
   const { data, error } = await supabase.rpc('admin_set_customer_restriction', {
     p_customer_id: input.customerId,
     p_reason: input.reason,
@@ -534,10 +464,6 @@ export async function adminSetCustomerRestriction(input: {
 }
 
 export async function adminLiftCustomerRestriction(restrictionId: string, reason?: string) {
-  if (!supabase) {
-    throw new Error('Moderation requires Supabase.');
-  }
-
   const { error } = await supabase.rpc('admin_lift_customer_restriction', {
     p_restriction_id: restrictionId,
     p_reason: reason ?? null,
@@ -548,10 +474,6 @@ export async function adminLiftCustomerRestriction(restrictionId: string, reason
 }
 
 export async function deleteSellerChatThread(threadId: string) {
-  if (!supabase) {
-    throw new Error('Chat requires Supabase.');
-  }
-
   const { error } = await supabase.rpc('admin_delete_seller_chat_thread', {
     p_thread_id: threadId,
   });
@@ -561,10 +483,6 @@ export async function deleteSellerChatThread(threadId: string) {
 }
 
 export async function adminDeleteCustomerAccount(customerId: string, reason?: string) {
-  if (!supabase) {
-    throw new Error('Moderation requires Supabase.');
-  }
-
   const { error } = await supabase.rpc('admin_delete_customer_account', {
     p_customer_id: customerId,
     p_reason: reason ?? null,

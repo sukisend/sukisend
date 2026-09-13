@@ -44,3 +44,5 @@ yarn-error.*
 # emulator runtime temp files
 com.facebook.react.devsupport.BundleDownloader
 okhttp3.internal.connection.RealCall$AsyncCall
+.vercel
+.env*

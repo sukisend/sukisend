@@ -1,4 +1,3 @@
-import { mockCategories, mockProducts } from '../data/mockData';
 import { supabase } from '../lib/supabase';
 import { Category, Product, ProductSortOption, ShippingMethod } from '../types/models';
 import { getProductBasePrice } from '../utils/pricing';
@@ -15,37 +14,6 @@ interface ProductQuery {
   sort?: ProductSortOption;
   page?: number;
   pageSize?: number;
-}
-
-function applySort(products: Product[], sort: ProductSortOption = 'best_selling') {
-  const copy = [...products];
-
-  switch (sort) {
-    case 'all':
-      return copy;
-    case 'name_asc':
-      return copy.sort((a, b) => a.name.localeCompare(b.name));
-    case 'on_sale':
-      return copy.sort((a, b) => {
-        const aOnSale = Number(Boolean(a.onSale));
-        const bOnSale = Number(Boolean(b.onSale));
-        if (aOnSale !== bOnSale) {
-          return bOnSale - aOnSale;
-        }
-        return getProductBasePrice(a) - getProductBasePrice(b);
-      });
-    case 'newest':
-      return copy;
-    case 'oldest':
-      return copy.reverse();
-    case 'price_asc':
-      return copy.sort((a, b) => getProductBasePrice(a) - getProductBasePrice(b));
-    case 'price_desc':
-      return copy.sort((a, b) => getProductBasePrice(b) - getProductBasePrice(a));
-    case 'best_selling':
-    default:
-      return copy.sort((a, b) => (b.sortPriority ?? 0) - (a.sortPriority ?? 0));
-  }
 }
 
 function applyDbSort<T>(query: T, sort: ProductSortOption | undefined) {
@@ -72,10 +40,6 @@ function applyDbSort<T>(query: T, sort: ProductSortOption | undefined) {
 }
 
 export async function fetchPublicCategories(): Promise<Category[]> {
-  if (!supabase) {
-    return mockCategories;
-  }
-
   if (getCategoryIconColumnSupported() !== false) {
     const { data, error } = await supabase.from('categories').select('id, name, icon, image_url').order('name', { ascending: true });
     if (!error) {
@@ -102,25 +66,6 @@ export async function fetchPublicProducts(query?: ProductQuery): Promise<Product
   const page = Math.max(1, Number(query?.page ?? 1));
   const rawPageSize = Number(query?.pageSize ?? 0);
   const pageSize = Number.isFinite(rawPageSize) && rawPageSize > 0 ? Math.floor(rawPageSize) : 0;
-
-  if (!supabase) {
-    const filtered = mockProducts.filter((product) => {
-      const bySearch = query?.search
-        ? product.name.toLowerCase().includes(query.search.toLowerCase()) ||
-          (product.description ?? '').toLowerCase().includes(query.search.toLowerCase())
-        : true;
-      const byCategory = query?.categoryId && query.categoryId !== 'all' ? product.categoryId === query.categoryId : true;
-      return bySearch && byCategory && product.isActive;
-    });
-
-    const sorted = applySort(filtered, query?.sort);
-    if (!pageSize) {
-      return sorted;
-    }
-
-    const start = (page - 1) * pageSize;
-    return sorted.slice(start, start + pageSize);
-  }
 
   let dbQuery = supabase
     .from('products')
@@ -173,10 +118,6 @@ export async function fetchPublicProducts(query?: ProductQuery): Promise<Product
 }
 
 export async function fetchProductById(productId: string): Promise<Product | null> {
-  if (!supabase) {
-    return mockProducts.find((item) => item.id === productId) ?? null;
-  }
-
   const { data, error } = await supabase
     .from('products')
     .select(
@@ -212,10 +153,6 @@ export async function fetchProductById(productId: string): Promise<Product | nul
 }
 
 export async function fetchShippingMethods(): Promise<ShippingMethod[]> {
-  if (!supabase) {
-    return [];
-  }
-
   const { data, error } = await supabase
     .from('shipping_methods')
     .select('id, name, description, base_fee, eta_min_days, eta_max_days, is_active')

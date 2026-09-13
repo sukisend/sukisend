@@ -103,7 +103,6 @@ export function AuthScreen() {
     }
     setForgotLoading(true);
     try {
-      if (!supabase) throw new Error('Supabase not configured');
       const { data, error } = await supabase.rpc('verify_username_for_recovery', { p_username: forgotUsername.trim() });
       if (error) throw error;
       if (!data || data.length === 0) {
@@ -134,7 +133,6 @@ export function AuthScreen() {
     }
     setForgotLoading(true);
     try {
-      if (!supabase) throw new Error('Supabase not configured');
       const { data, error } = await supabase.rpc('verify_secret_answer', {
         p_profile_id: forgotProfileId,
         p_answer: forgotSecretAnswer.trim(),
@@ -163,7 +161,6 @@ export function AuthScreen() {
     }
     setForgotLoading(true);
     try {
-      if (!supabase) throw new Error('Supabase not configured');
       const { data, error } = await supabase.rpc('reset_password_by_secret', {
         p_profile_id: forgotProfileId,
         p_birthdate: forgotBirthdate,
